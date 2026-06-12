@@ -1,0 +1,83 @@
+{
+  "models": {
+    "claude-haiku": {
+      "id": "claude-haiku-4-5",
+      "provider": "anthropic",
+      "display_name": "Claude Haiku 4.5",
+      "api_base": "https://api.anthropic.com/v1",
+      "strengths": ["document_work", "summarization", "chat", "analysis"],
+      "context_window": 200000,
+      "free": true,
+      "enabled": true,
+      "priority": 3
+    },
+    "gemini-flash": {
+      "id": "gemini-2.0-flash",
+      "provider": "google",
+      "display_name": "Gemini 2.0 Flash",
+      "api_base": "https://generativelanguage.googleapis.com/v1beta",
+      "strengths": ["web_research", "multimodal", "fast_reasoning", "current_events"],
+      "context_window": 1000000,
+      "free": true,
+      "enabled": true,
+      "priority": 2
+    },
+    "llama-70b": {
+      "id": "llama-3.3-70b-versatile",
+      "provider": "groq",
+      "display_name": "Llama 3.3 70B (Groq)",
+      "api_base": "https://api.groq.com/openai/v1",
+      "strengths": ["fast_chat", "simple_tasks", "quick_answers", "coding"],
+      "context_window": 128000,
+      "free": true,
+      "enabled": true,
+      "priority": 1
+    },
+    "deepseek-r1": {
+      "id": "deepseek-reasoner",
+      "provider": "deepseek",
+      "display_name": "DeepSeek R1",
+      "api_base": "https://api.deepseek.com/v1",
+      "strengths": ["deep_reasoning", "math", "logic", "complex_planning"],
+      "context_window": 64000,
+      "free": true,
+      "enabled": true,
+      "priority": 4
+    },
+    "deepseek-coder": {
+      "id": "deepseek-chat",
+      "provider": "deepseek",
+      "display_name": "DeepSeek V3",
+      "api_base": "https://api.deepseek.com/v1",
+      "strengths": ["coding", "debugging", "pc_diagnosis", "shell_scripts"],
+      "context_window": 64000,
+      "free": true,
+      "enabled": true,
+      "priority": 3
+    },
+    "mistral-small": {
+      "id": "mistral-small-latest",
+      "provider": "mistral",
+      "display_name": "Mistral Small",
+      "api_base": "https://api.mistral.ai/v1",
+      "strengths": ["lightweight", "fast_chat", "summarization"],
+      "context_window": 32000,
+      "free": true,
+      "enabled": true,
+      "priority": 2
+    }
+  },
+  "task_model_map": {
+    "deep_reasoning": ["deepseek-r1"],
+    "web_research": ["gemini-flash"],
+    "coding": ["deepseek-coder", "llama-70b"],
+    "document_work": ["claude-haiku", "gemini-flash"],
+    "fast_chat": ["llama-70b", "mistral-small"],
+    "pc_diagnosis": ["deepseek-coder", "llama-70b"],
+    "shell_automation": ["deepseek-coder"],
+    "analysis": ["deepseek-r1", "claude-haiku"],
+    "summarization": ["claude-haiku", "mistral-small"],
+    "multimodal": ["gemini-flash"],
+    "general": ["llama-70b", "gemini-flash"]
+  }
+}

@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+*.log
+*.sqlite3
+
+# Virtualenv
+venv/
+.env
+.env.*
+
+# Node / frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.cache/
+frontend/.parcel-cache/
+frontend/coverage/
+
+# Electron
+frontend/electron/dist/
+
+# Logs
+logs/
+
+# OS / editor
+.DS_Store
+*.swp
+*.swo
+*.swn
+*.un~
+.vscode/
+.idea/
+
+# Secrets / config (keep if you want committed examples)
+config/*.local
+config/*.secret
+
+# Misc
+.env.local
+
+# Optional: ignore compiled Python cache in backend
+backend/__pycache__/
+
