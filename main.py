@@ -12,8 +12,10 @@ import argparse
 from pathlib import Path
 
 ROOT = Path(__file__).parent
-sys.path.insert(0, str(ROOT / "backend"))
-sys.path.insert(0, str(ROOT / "backend" / "core"))
+# Allow imports like `api.*` when running `python main.py` from this directory
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "core"))
+
 
 from dotenv import load_dotenv
 load_dotenv(ROOT / ".env")

@@ -22,7 +22,16 @@
   "build": {
     "appId": "ai.asrar.agent",
     "productName": "Asrār",
-    "directories": { "output": "dist-electron" },
-    "files": ["dist/**", "electron/**"]
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "dist/**",
+      "electron/**"
+    ]
+  },
+  "allowScripts": {
+    "electron@31.7.7": true,
+    "esbuild@0.21.5": true
   }
 }

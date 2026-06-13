@@ -1,19 +1,15 @@
-const { app, BrowserWindow, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
 const { spawn } = require("child_process");
 
 let mainWindow;
 let pythonProcess;
 
-const API_URL = "http://127.0.0.1:8000";
-const isDev = process.env.NODE_ENV === "development";
-
 function startPythonBackend() {
-  const scriptPath = path.join(__dirname, "../../main.py");
-  pythonProcess = spawn("python", [scriptPath], {
-    cwd: path.join(__dirname, "../.."),
-  });
-
+  const projectRoot = path.resolve(__dirname, "../../");
+  const scriptPath = path.join(projectRoot, "main.py");
+  console.log("[backend] starting:", scriptPath);
+  pythonProcess = spawn("python3", [scriptPath], { cwd: projectRoot });
   pythonProcess.stdout.on("data", (d) => console.log(`[backend] ${d}`));
   pythonProcess.stderr.on("data", (d) => console.error(`[backend] ${d}`));
   pythonProcess.on("close", (code) => console.log(`[backend] exited: ${code}`));
@@ -34,17 +30,12 @@ function createWindow() {
     },
   });
 
-  if (isDev) {
-    mainWindow.loadURL("http://localhost:5173");
-    mainWindow.webContents.openDevTools();
-  } else {
-    mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
-  }
+  // Always load Vite dev server in dev
+  mainWindow.loadURL("http://localhost:5173");
 }
 
 app.whenReady().then(() => {
   startPythonBackend();
-  // Give backend a moment to start
   setTimeout(createWindow, 1500);
 });
 
@@ -53,12 +44,6 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-// IPC — window controls
 ipcMain.on("minimize", () => mainWindow.minimize());
-ipcMain.on("maximize", () => {
-  mainWindow.isMaximized() ? mainWindow.unmaximize() : mainWindow.maximize();
-});
-ipcMain.on("close", () => {
-  if (pythonProcess) pythonProcess.kill();
-  mainWindow.close();
-});
+ipcMain.on("maximize", () => mainWindow.isMaximized() ? mainWindow.unmaximize() : mainWindow.maximize());
+ipcMain.on("close", () => { if (pythonProcess) pythonProcess.kill(); mainWindow.close(); });

@@ -1,17 +1,7 @@
 import { useState, useRef, useEffect } from "react";
+import ModelBadge from "./ModelBadge";
 
 const API = "http://127.0.0.1:8000";
-
-function ModelBadge({ model, taskType }) {
-  if (!model) return null;
-  return (
-    <span className="model-badge">
-      <span className="dot" />
-      {model}
-      {taskType && <span style={{ opacity: 0.6 }}>· {taskType}</span>}
-    </span>
-  );
-}
 
 function Message({ msg }) {
   return (
@@ -28,10 +18,11 @@ function Message({ msg }) {
             ? <pre key={i}><code>{part.trim()}</code></pre>
             : <span key={i}>{part}</span>
         )}
+        {msg.streaming && <span className="stream-cursor">▋</span>}
       </div>
       {msg.tools?.length > 0 && (
         <div style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)", marginTop: 4 }}>
-          ⚙ tools used: {msg.tools.join(", ")}
+          ⚙ tools: {msg.tools.join(", ")}
         </div>
       )}
     </div>
@@ -40,14 +31,14 @@ function Message({ msg }) {
 
 export default function Chat({ forceModel }) {
   const [messages, setMessages] = useState([]);
-  const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
-  const bottomRef = useRef(null);
-  const textareaRef = useRef(null);
+  const [input, setInput]       = useState("");
+  const [loading, setLoading]   = useState(false);
+  const bottomRef  = useRef(null);
+  const abortRef   = useRef(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
+  }, [messages]);
 
   const now = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
@@ -62,38 +53,87 @@ export default function Chat({ forceModel }) {
 
     const history = messages.map(m => ({ role: m.role, content: m.content }));
 
+    // Placeholder streaming message
+    const assistantIdx = messages.length + 1;
+    setMessages(prev => [...prev, {
+      role: "assistant", content: "", streaming: true,
+      model: null, taskType: null, tools: [], time: now(),
+    }]);
+
     try {
-      const res = await fetch(`${API}/chat`, {
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      const res = await fetch(`${API}/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: text, history, force_model: forceModel || null }),
+        signal: controller.signal,
       });
-      const data = await res.json();
 
-      setMessages(prev => [...prev, {
-        role: "assistant",
-        content: data.response,
-        model: data.model_used,
-        taskType: data.task_type,
-        tools: data.tool_calls?.map(t => t.tool) || [],
-        time: now(),
-      }]);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let model = null, taskType = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop();
+
+        for (const line of lines) {
+          if (!line.startsWith("data:")) continue;
+          try {
+            const chunk = JSON.parse(line.slice(5).trim());
+
+            if (chunk.meta) {
+              model = chunk.model;
+              taskType = chunk.task_type;
+              setMessages(prev => prev.map((m, i) =>
+                i === assistantIdx ? { ...m, model, taskType } : m
+              ));
+            } else if (chunk.token) {
+              setMessages(prev => prev.map((m, i) =>
+                i === assistantIdx ? { ...m, content: m.content + chunk.token } : m
+              ));
+            } else if (chunk.done) {
+              setMessages(prev => prev.map((m, i) =>
+                i === assistantIdx ? { ...m, streaming: false } : m
+              ));
+            } else if (chunk.error) {
+              setMessages(prev => prev.map((m, i) =>
+                i === assistantIdx ? { ...m, content: `Error: ${chunk.error}`, streaming: false } : m
+              ));
+            }
+          } catch { }
+        }
+      }
     } catch (e) {
-      setMessages(prev => [...prev, {
-        role: "assistant",
-        content: `Connection error: ${e.message}. Is the backend running? (python main.py)`,
-        time: now(),
-      }]);
+      if (e.name !== "AbortError") {
+        setMessages(prev => prev.map((m, i) =>
+          i === assistantIdx
+            ? { ...m, content: `Connection error: ${e.message}. Is the backend running? (python main.py)`, streaming: false }
+            : m
+        ));
+      }
     } finally {
       setLoading(false);
+      abortRef.current = null;
     }
   }
 
+  function stop() {
+    abortRef.current?.abort();
+    setLoading(false);
+    setMessages(prev => prev.map((m, i) =>
+      m.streaming ? { ...m, streaming: false } : m
+    ));
+  }
+
   function onKey(e) {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      send();
-    }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   }
 
   function autoResize(e) {
@@ -116,22 +156,12 @@ export default function Chat({ forceModel }) {
         ) : (
           messages.map((m, i) => <Message key={i} msg={m} />)
         )}
-        {loading && (
-          <div className="message assistant">
-            <div className="typing-indicator">
-              <div className="typing-dot" />
-              <div className="typing-dot" />
-              <div className="typing-dot" />
-            </div>
-          </div>
-        )}
         <div ref={bottomRef} />
       </div>
 
       <div className="chat-input-area">
         <div className="chat-input-row">
           <textarea
-            ref={textareaRef}
             className="chat-textarea"
             placeholder="Ask Asrār anything..."
             value={input}
@@ -139,11 +169,12 @@ export default function Chat({ forceModel }) {
             onKeyDown={onKey}
             rows={1}
           />
-          <button className="send-btn" onClick={send} disabled={!input.trim() || loading}>
-            ↑
-          </button>
+          {loading
+            ? <button className="send-btn" onClick={stop} style={{ background: "var(--red)" }}>■</button>
+            : <button className="send-btn" onClick={send} disabled={!input.trim()}>↑</button>
+          }
         </div>
-        <div className="input-hint">Enter to send · Shift+Enter for new line</div>
+        <div className="input-hint">Enter to send · Shift+Enter for new line{loading ? " · ■ to stop" : ""}</div>
       </div>
     </div>
   );

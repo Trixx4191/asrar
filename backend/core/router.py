@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from dataclasses import dataclass
 
-from classifier import classify_task, ClassifiedTask
+from core.classifier import classify_task, ClassifiedTask
 
 
 CONFIG_PATH = Path(__file__).parent.parent.parent / "config" / "models.json"
