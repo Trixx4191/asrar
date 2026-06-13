@@ -29,36 +29,56 @@ class GoogleProvider(BaseProvider):
     async def complete(self, messages, model_id, system=None, max_tokens=2048, stream=False) -> ProviderResponse:
         contents = self._build_contents(messages, system)
         body = {"contents": contents, "generationConfig": {"maxOutputTokens": max_tokens}}
-
-        endpoint = "streamGenerateContent" if stream else "generateContent"
-        url = f"{self.base_url}/models/{model_id}:{endpoint}?key={self.api_key}"
+        url = f"{self.base_url}/models/{model_id}:generateContent?key={self.api_key}"
 
         try:
             if stream:
-                return self._stream(url, body, model_id)
+                # For streaming, return a generator
+                async def stream_gen():
+                    async with httpx.AsyncClient(timeout=60) as client:
+                        async with client.stream("POST", url.replace("generateContent", "streamGenerateContent"), json=body) as r:
+                            async for line in r.aiter_lines():
+                                line = line.strip()
+                                if not line or line == "[" or line == "]":
+                                    continue
+                                clean = line.lstrip(",").strip()
+                                try:
+                                    chunk = json.loads(clean)
+                                    text = chunk.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                                    if text:
+                                        yield text
+                                except Exception:
+                                    pass
+                return stream_gen()
 
             async with httpx.AsyncClient(timeout=60) as client:
                 r = await client.post(url, json=body)
                 r.raise_for_status()
                 data = r.json()
-                text = data["candidates"][0]["content"]["parts"][0]["text"]
+                text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
                 return ProviderResponse(content=text, model_id=model_id, provider=self.name)
         except Exception as e:
             return ProviderResponse(content="", model_id=model_id, provider=self.name, success=False, error=str(e))
 
-    async def _stream(self, url, body, model_id):
-        async with httpx.AsyncClient(timeout=60) as client:
-            async with client.stream("POST", url, json=body) as r:
-                async for line in r.aiter_lines():
-                    line = line.strip()
-                    if not line or line == "[" or line == "]":
-                        continue
-                    # Gemini streams as JSON array chunks
-                    clean = line.lstrip(",").strip()
-                    try:
-                        chunk = json.loads(clean)
-                        text = chunk["candidates"][0]["content"]["parts"][0].get("text", "")
-                        if text:
-                            yield text
-                    except Exception:
-                        pass
+    async def _stream(self, headers, body, model_id):
+        """Unified streaming interface matching other providers."""
+        # Extract URL from context if needed
+        url = f"{self.base_url}/models/{model_id}:streamGenerateContent?key={self.api_key}"
+        
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                async with client.stream("POST", url, json=body) as r:
+                    async for line in r.aiter_lines():
+                        line = line.strip()
+                        if not line or line == "[" or line == "]":
+                            continue
+                        clean = line.lstrip(",").strip()
+                        try:
+                            chunk = json.loads(clean)
+                            text = chunk.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                            if text:
+                                yield text
+                        except Exception:
+                            pass
+        except Exception as e:
+            yield f"[Error: {str(e)}]"

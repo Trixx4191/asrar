@@ -13,7 +13,7 @@ function Toggle({ on, onToggle }) {
   return <div className={`toggle-switch ${on ? "on" : ""}`} onClick={onToggle} />;
 }
 
-export default function Settings({ agentName, onRename }) {
+export default function Settings({ agentName, onRename, onSettingsChange }) {
   const [settings, setSettings] = useState(() => {
     try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem("asrar_settings") || "{}") }; }
     catch { return DEFAULTS; }
@@ -25,6 +25,7 @@ export default function Settings({ agentName, onRename }) {
     const next = { ...settings, [key]: !settings[key] };
     setSettings(next);
     localStorage.setItem("asrar_settings", JSON.stringify(next));
+    onSettingsChange?.(next);
   }
 
   function saveIdentity() {

@@ -8,6 +8,7 @@ import os
 import json
 from pathlib import Path
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 
 @dataclass
@@ -64,10 +65,111 @@ def write_file(path: str, content: str, overwrite: bool = False) -> FileResult:
         return FileResult(success=False, error=f"File exists. Pass overwrite=True to replace: {path}")
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
-        return FileResult(success=True, path=str(p))
+        p.write_text(str(content), encoding="utf-8")
+        
+        # Verify file was written
+        if not p.exists():
+            return FileResult(success=False, error=f"File was not created at {p}")
+        
+        return FileResult(success=True, path=str(p), content=f"File written: {p}")
     except Exception as e:
         return FileResult(success=False, error=str(e))
+
+
+def download_url(url: str, path: str | None = None, overwrite: bool = False) -> FileResult:
+    """Download a URL to a local file path."""
+    if not url:
+        return FileResult(success=False, error="No URL provided.")
+
+    # Ensure url is a string
+    url = str(url).strip()
+    
+    try:
+        import httpx
+    except ImportError:
+        return FileResult(success=False, error="httpx not installed. Run: pip install httpx")
+
+    try:
+        parsed = urlparse(url)
+        if not path:
+            filename = Path(parsed.path).name or "downloaded.file"
+            path = filename
+
+        p = Path(path).expanduser().resolve()
+        if p.exists() and not overwrite:
+            return FileResult(success=False, error=f"File exists. Pass overwrite=True to replace: {path}")
+
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with httpx.Client(timeout=30, follow_redirects=True) as client:
+            resp = client.get(url)
+            resp.raise_for_status()
+            p.write_bytes(resp.content)
+
+        # Verify file was written
+        if not p.exists():
+            return FileResult(success=False, error=f"File was not created at {p}")
+        
+        size = p.stat().st_size
+        return FileResult(success=True, path=str(p), content=f"Downloaded {size} bytes to {p}")
+    except Exception as e:
+        return FileResult(success=False, error=f"Download failed: {str(e)}")
+
+
+def create_project(name: str, base_path: str | None = None, files_dict: dict[str, str] | None = None) -> FileResult:
+    """Create a new project directory with optional files.
+    
+    Args:
+        name: Project name
+        base_path: Where to create the project (default: ~/Downloads)
+        files_dict: Dict of {filename: content}
+    
+    Example:
+        create_project("calculator", files_dict={
+            "main.py": "print('hello')",
+            "README.md": "# Calculator"
+        })
+    """
+    print(f"\n[DEBUG create_project] name={name}, base_path={base_path}, files_dict type={type(files_dict)}")
+    if files_dict:
+        if isinstance(files_dict, dict):
+            print(f"[DEBUG create_project] files_dict is dict with {len(files_dict)} items: {list(files_dict.keys())}")
+        else:
+            print(f"[DEBUG create_project] files_dict is {type(files_dict)}: {str(files_dict)[:200]}")
+    else:
+        print(f"[DEBUG create_project] files_dict is None or empty")
+    
+    if not name:
+        return FileResult(success=False, error="Project name required.")
+    
+    try:
+        base = Path(base_path or "~/Downloads").expanduser().resolve()
+        project_dir = base / name
+        
+        # Create project directory
+        project_dir.mkdir(parents=True, exist_ok=True)
+        
+        created_files = []
+        if files_dict:
+            for filename, content in files_dict.items():
+                file_path = project_dir / filename
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                file_path.write_text(str(content), encoding="utf-8")
+                
+                # Verify file was created
+                if not file_path.exists():
+                    return FileResult(success=False, error=f"Failed to create {filename}")
+                created_files.append(filename)
+        
+        summary = f"Project '{name}' created at {project_dir}\n"
+        if created_files:
+            summary += f"Files: {', '.join(created_files)}"
+        
+        return FileResult(success=True, path=str(project_dir), content=summary)
+    except Exception as e:
+        import traceback
+        print(f"[DEBUG create_project] Error: {e}")
+        print(traceback.format_exc())
+        return FileResult(success=False, error=f"Project creation failed: {str(e)}")
 
 
 def append_file(path: str, content: str) -> FileResult:

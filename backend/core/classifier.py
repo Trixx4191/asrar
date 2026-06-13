@@ -35,9 +35,11 @@ TASK_SIGNALS: dict[str, list[str]] = {
         "build", "develop", "compile", "syntax", "error in code", "refactor"
     ],
     "document_work": [
-        "document", "write", "draft", "essay", "report", "summarize",
-        "letter", "email", "pdf", "word", "docx", "edit text", "proofread",
-        "rewrite", "format", "paragraph", "article", "blog"
+        "create", "write", "draft", "edit", "file", "project", "document",
+        "essay", "report", "summarize", "letter", "email", "pdf", "word",
+        "docx", "edit text", "proofread", "rewrite", "format", "paragraph",
+        "article", "blog", "save", "download", "store locally", "app",
+        "calculator", "build app", "github", "repository"
     ],
     "pc_diagnosis": [
         "crash", "error", "not working", "broken", "fix my pc", "blue screen",
@@ -48,7 +50,8 @@ TASK_SIGNALS: dict[str, list[str]] = {
     "shell_automation": [
         "run command", "terminal", "shell", "automate", "script", "batch",
         "powershell", "bash", "cmd", "execute", "schedule", "cron",
-        "install", "uninstall", "move files", "rename", "delete folder"
+        "install", "uninstall", "move files", "rename", "delete folder",
+        "mkdir", "directory", "folder"
     ],
     "fast_chat": [
         "what is", "who is", "how do i", "quick", "simple", "tell me",

@@ -18,7 +18,19 @@ export default function App() {
   const [agentName, setAgentName] = useState("Asrār");
   const [backendOk, setBackendOk] = useState(null);
   const [models, setModels]       = useState([]);
-  const [forceModel, setForceModel] = useState(null);
+  const [forceModel, setForceModel] = useState(() => {
+    return window.localStorage.getItem("asrar_force_model") || null;
+  });
+  const [settings, setSettings] = useState(() => {
+    try {
+      return JSON.parse(window.localStorage.getItem("asrar_settings") || "{}") || {};
+    } catch {
+      return {};
+    }
+  });
+
+  const autoSelectModel = settings.auto_select_model !== false;
+  const activeForceModel = autoSelectModel ? null : forceModel;
 
   // Health check
   useEffect(() => {
@@ -37,6 +49,14 @@ export default function App() {
 
   const isElectron = typeof window.asrar !== "undefined";
 
+  useEffect(() => {
+    window.localStorage.setItem("asrar_force_model", forceModel || "");
+  }, [forceModel]);
+
+  function handleSettingsChange(next) {
+    setSettings(next);
+  }
+
   return (
     <div className="app-shell">
       {/* Titlebar */}
@@ -46,20 +66,23 @@ export default function App() {
 
         {/* Model picker */}
         {view === "chat" && models.length > 0 && (
-          <select
-            style={{
-              marginLeft: 20, background: "var(--bg-raised)", border: "1px solid var(--border)",
-              borderRadius: 6, padding: "3px 8px", fontSize: 11, color: "var(--text-secondary)",
-              fontFamily: "var(--font-mono)", cursor: "pointer",
-            }}
-            value={forceModel || ""}
-            onChange={e => setForceModel(e.target.value || null)}
-          >
-            <option value="">Auto-select model</option>
-            {models.filter(m => m.enabled !== false).map(m => (
-              <option key={m.key} value={m.key}>{m.display_name}</option>
-            ))}
-          </select>
+          <div style={{ display: "flex", alignItems: "center", marginLeft: 20, gap: 8 }}>
+            <span style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>Model:</span>
+            <select
+              style={{
+                background: "var(--bg-raised)", border: "1px solid var(--border)",
+                borderRadius: 6, padding: "4px 10px", fontSize: 11, color: "var(--text-secondary)",
+                fontFamily: "var(--font-mono)", cursor: "pointer",
+              }}
+              value={forceModel || ""}
+              onChange={e => setForceModel(e.target.value || null)}
+            >
+              <option value="">Auto-select model</option>
+              {models.filter(m => m.enabled !== false).map(m => (
+                <option key={m.key} value={m.key}>{m.display_name}</option>
+              ))}
+            </select>
+          </div>
         )}
 
         {isElectron && (
@@ -101,10 +124,10 @@ export default function App() {
 
         {/* Main */}
         <div className="main-content">
-          {view === "chat"     && <Chat forceModel={forceModel} />}
+          {view === "chat"     && <Chat forceModel={activeForceModel} />}
           {view === "models"   && <ModelRegistry />}
           {view === "history"  && <TaskHistory />}
-          {view === "settings" && <Settings agentName={agentName} onRename={setAgentName} />}
+          {view === "settings" && <Settings agentName={agentName} onRename={setAgentName} onSettingsChange={handleSettingsChange} />}
         </div>
       </div>
 

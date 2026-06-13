@@ -48,9 +48,11 @@ async def chat(req: ChatRequest):
 
 @router.post("/stream")
 async def chat_stream(req: ChatRequest):
-    """True per-token SSE stream directly from the provider."""
+    """Stream response with tool execution."""
 
     async def generator():
+        from core.agent import SYSTEM_PROMPT, _build_tool_context, _execute_embedded_tools
+        
         history = [Message(role=m["role"], content=m["content"]) for m in req.history]
         decision = route(req.message, force_model=req.force_model)
         provider = get_provider(decision.selected_model["provider"])
@@ -61,7 +63,6 @@ async def chat_stream(req: ChatRequest):
         full_text = ""
         try:
             # Build messages
-            from core.agent import SYSTEM_PROMPT, _build_tool_context
             tool_ctx = _build_tool_context(decision.task_type, req.message)
             messages = history + [Message(role="user", content=req.message + tool_ctx)]
 
@@ -71,12 +72,21 @@ async def chat_stream(req: ChatRequest):
 
             headers, body = _build_stream_payload(provider, provider_name, model_id, messages, SYSTEM_PROMPT)
 
+            # Collect full response as we stream
             async for token in provider._stream(headers, body, model_id):
                 full_text += token
                 yield f"data: {json.dumps({'token': token})}\n\n"
 
+            # Now execute any embedded tool calls in the full response
+            tool_calls = await _execute_embedded_tools(full_text)
+            
+            if tool_calls:
+                tool_summary = "\n".join(f"[{t['tool']}]: {t['result']}" for t in tool_calls)
+                yield f"data: {json.dumps({'tools_executed': tool_summary})}\n\n"
+
         except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            import traceback
+            yield f"data: {json.dumps({'error': str(e), 'trace': traceback.format_exc()})}\n\n"
 
         yield f"data: {json.dumps({'done': True})}\n\n"
 
@@ -105,9 +115,9 @@ def _build_stream_payload(provider, provider_name: str, model_id: str, messages,
 
     elif isinstance(provider, GoogleProvider):
         contents = provider._build_contents(messages, system)
-        url = f"{provider.base_url}/models/{model_id}:streamGenerateContent?key={provider.api_key}"
+        headers = {}  # Google uses URL key, no extra headers
         body = {"contents": contents, "generationConfig": {"maxOutputTokens": 2048}}
-        return {}, body  # URL-based, no extra headers needed
+        return headers, body
 
     else:
         # OpenAI-compatible (Groq, DeepSeek, OpenRouter, Mistral)

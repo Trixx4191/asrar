@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 load_dotenv(ROOT / ".env")
 
-from api.routes import chat, models, tasks
+from api.routes import chat, models, tasks, debug
 
 app = FastAPI(title="Asrār Agent API", version="0.1.0")
 
@@ -30,6 +30,7 @@ app.add_middleware(
 app.include_router(chat.router,   prefix="/chat",   tags=["chat"])
 app.include_router(models.router, prefix="/models", tags=["models"])
 app.include_router(tasks.router,  prefix="/tasks",  tags=["tasks"])
+app.include_router(debug.router,  prefix="/debug",  tags=["debug"])
 
 
 @app.get("/")
