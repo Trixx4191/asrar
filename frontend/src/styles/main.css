@@ -1,34 +1,39 @@
 :root {
-  --bg-base:      #0a0a0f;
-  --bg-surface:   #111118;
-  --bg-raised:    #18181f;
-  --bg-hover:     #1e1e28;
-  --border:       #2a2a38;
-  --border-soft:  #1e1e28;
+  /* Brutalist clean milky palette */
+  --bg-base:      #fbf7ef; /* milky paper */
+  --bg-surface:   #f3ede0; /* warm surface */
+  --bg-raised:    #efe7d6; /* slightly raised paper */
+  --bg-hover:     #e7dfcb; /* hover tint */
 
-  --text-primary:   #e8e8f0;
-  --text-secondary: #8888a8;
-  --text-muted:     #44445a;
+  --border:       #1b1b1f; /* brutal ink */
+  --border-soft:  rgba(27, 27, 31, 0.14);
 
-  --accent:       #7c6af7;
-  --accent-glow:  rgba(124, 106, 247, 0.15);
-  --accent-soft:  rgba(124, 106, 247, 0.08);
+  --text-primary:   #151517; /* ink */
+  --text-secondary: rgba(21, 21, 23, 0.74);
+  --text-muted:     rgba(21, 21, 23, 0.46);
 
-  --gold:         #c9a84c;
-  --gold-soft:    rgba(201, 168, 76, 0.1);
+  /* Subtle sufi/ochre accents */
+  --accent:       #a8731f; /* ochre */
+  --accent-glow:  rgba(168, 115, 31, 0.25);
+  --accent-soft:  rgba(168, 115, 31, 0.10);
 
-  --green:        #4caf82;
-  --red:          #e05c5c;
-  --yellow:       #d4a843;
+  --gold:         #b88a2f;
+  --gold-soft:    rgba(184, 138, 47, 0.12);
+
+  --green:        #0a8f5b;
+  --red:          #c63a3a;
+  --yellow:       #a06a0f;
 
   --font-ui:   "Inter", sans-serif;
   --font-mono: "IBM Plex Mono", monospace;
   --font-ar:   "Noto Naskh Arabic", serif;
 
-  --radius:    8px;
-  --radius-lg: 14px;
+  /* Keep mostly rectangular for brutalist feel */
+  --radius:    6px;
+  --radius-lg: 12px;
   --sidebar-w: 240px;
 }
+
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -41,7 +46,15 @@ html, body, #root {
   font-family: var(--font-ui);
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
+
+  /* gentle sufi grain */
+  background-image:
+    radial-gradient(circle at 20% 10%, rgba(184,138,47,0.10), transparent 40%),
+    radial-gradient(circle at 80% 40%, rgba(168,115,31,0.08), transparent 45%),
+    repeating-linear-gradient(90deg, rgba(0,0,0,0.015) 0 1px, transparent 1px 8px);
+  background-blend-mode: multiply;
 }
+
 
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -85,16 +98,23 @@ input, textarea {
 .titlebar-btn {
   width: 26px;
   height: 26px;
-  border-radius: 6px;
+  border-radius: 4px;
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--text-muted);
   font-size: 12px;
-  transition: background 0.15s, color 0.15s;
+  transition: background 0.14s, color 0.14s, transform 0.14s;
+  border: 1px solid transparent;
 }
-.titlebar-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.titlebar-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  transform: translateY(-1px);
+  border-color: var(--border-soft);
+}
 .titlebar-btn.close:hover { background: var(--red); color: white; }
+
 
 /* Layout */
 .app-shell {
@@ -156,15 +176,21 @@ input, textarea {
   border-radius: var(--radius);
   color: var(--text-secondary);
   font-size: 13px;
-  transition: all 0.12s;
+  transition: background 0.14s, color 0.14s, border-color 0.14s, transform 0.14s;
   cursor: pointer;
+  border: 1px solid transparent;
 }
-.nav-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.nav-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  transform: translateY(-1px);
+}
 .nav-item.active {
-  background: var(--accent-soft);
+  background: linear-gradient(180deg, rgba(184,138,47,0.16), rgba(184,138,47,0.07));
   color: var(--accent);
-  border: 1px solid rgba(124,106,247,0.2);
+  border-color: rgba(184,138,47,0.35);
 }
+
 .nav-icon { font-size: 15px; width: 18px; text-align: center; }
 
 .sidebar-footer {
@@ -346,8 +372,11 @@ input, textarea {
 
 .chat-input-row:focus-within {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-glow);
+  box-shadow:
+    0 0 0 3px var(--accent-glow),
+    0 0 0 1px rgba(27,27,31,0.12) inset;
 }
+
 
 .chat-textarea {
   flex: 1;
