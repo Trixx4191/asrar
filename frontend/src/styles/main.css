@@ -639,3 +639,64 @@ input, textarea {
   border-radius: 50%;
   background: var(--green);
 }
+
+/* ── Tool call blocks ─────────────────────────────────────── */
+.tool-calls-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.tool-call-block {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.tool-call-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.12s;
+}
+.tool-call-header:hover { background: var(--bg-hover); }
+
+.tool-call-icon  { color: var(--accent); }
+.tool-call-name  { color: var(--text-primary); font-weight: 500; }
+.tool-call-args  {
+  color: var(--text-muted);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-call-status        { font-size: 12px; flex-shrink: 0; }
+.tool-call-status.done   { color: var(--green); }
+.tool-call-status.running {
+  color: var(--yellow);
+  display: inline-block;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+.tool-call-toggle { color: var(--text-muted); margin-left: auto; flex-shrink: 0; }
+
+.tool-call-result {
+  padding: 8px 10px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--bg-base);
+  color: var(--text-secondary);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+}

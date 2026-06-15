@@ -63,17 +63,29 @@ def write_file(path: str, content: str, overwrite: bool = False) -> FileResult:
     p = Path(path).expanduser().resolve()
     if p.exists() and not overwrite:
         return FileResult(success=False, error=f"File exists. Pass overwrite=True to replace: {path}")
+
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(str(content), encoding="utf-8")
-        
-        # Verify file was written
+
+        # Normalize content to a string deterministically
+        if isinstance(content, (dict, list)):
+            content_str = json.dumps(content, indent=2, ensure_ascii=False)
+        else:
+            content_str = str(content)
+
+        # Safety: do not allow null bytes
+        if "\x00" in content_str:
+            return FileResult(success=False, error="Refusing to write content with null bytes")
+
+        p.write_text(content_str, encoding="utf-8")
+
         if not p.exists():
             return FileResult(success=False, error=f"File was not created at {p}")
-        
+
         return FileResult(success=True, path=str(p), content=f"File written: {p}")
     except Exception as e:
         return FileResult(success=False, error=str(e))
+
 
 
 def download_url(url: str, path: str | None = None, overwrite: bool = False) -> FileResult:

@@ -1,162 +1,517 @@
 """
-Asrār — Main Agent Loop
-Receives a task, classifies it, picks the best model,
-calls the right tools, and returns a response.
+Asrār — Main Agent Loop  v0.2.0
+backend/core/agent.py
+
+What changed from v0.1:
+  - Replaced [TOOL:...] text-marker parsing with native LLM tool calls
+    (OpenAI function-calling format for Groq / DeepSeek / OpenRouter / Mistral;
+     Anthropic tool_use blocks; Google functionDeclarations)
+  - Tool execution is now deterministic — no regex, no XML fallback
+  - _build_tool_context() removed — tool schemas are sent via the API
+  - Streaming still works; tool calls during streaming are collected
+    then executed after the stream ends, same as before
+
+Public API (unchanged — chat.py / server.py need no edits):
+    await run_task(user_input, history, force_model) -> dict
+    SYSTEM_PROMPT  (imported by chat.py stream route)
 """
+
+from __future__ import annotations
 
 import sys
 import os
 import asyncio
 import json
+import logging
 from pathlib import Path
 from datetime import datetime
 
-# Path setup
 ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(ROOT / "backend" / "core"))
 sys.path.insert(0, str(ROOT / "backend"))
 
 from core.classifier import classify_task
-from core.router import route
+from core.router import route, load_registry
 from providers import get_provider
 from providers.base import Message
 from tools import web, files, shell, diagnosis
 
+logger = logging.getLogger("asrar.agent")
 LOG_PATH = ROOT / "logs" / "actions.log"
 ASRAR_SYSTEM = (ROOT / "ASRAR.md").read_text(encoding="utf-8")[:2000]
 
-SYSTEM_PROMPT = f"""You are Asrār (أسرار), a powerful agentic AI assistant running on the user's local computer.
+SYSTEM_PROMPT = """You are Asrār (أسرار), a powerful agentic AI assistant running on the user's local computer.
 You can work with files, create projects, download resources, run commands, and diagnose system issues.
 
 IMPORTANT AGENTIC BEHAVIOR:
-- When asked to create, edit, or modify files/projects, ALWAYS use tools
-- Use [TOOL:...] markers to execute actions — don't just explain what you would do
-- Every action should result in an actual change on the user's computer
-- Always verify tools succeeded and report exact paths/results
-- Think step-by-step and use tools for each step
+- When asked to create, edit, or modify files/projects, ALWAYS use your tools — don't just describe what you'd do.
+- Use tools for each step. Verify success. Report exact paths and results.
+- Think step-by-step and chain tool calls when needed.
 
-Tool usage format: [TOOL:tool_name|arg1=value1,arg2=value2]
-
-Example file creation:
-  "I'll create main.py for you now."
-  [TOOL:write_file|path=~/myproject/main.py,content=print('Hello World')]
-  "Created main.py at ~/myproject/main.py"
-
-Example project creation:
-  [TOOL:create_project|name=calculator,base_path=~/Downloads,files={{"main.py":"print('calc')","README.md":"# Calculator"}}]
-
-Your personality: Direct, efficient, action-oriented. Report what you did and the results.
-Before running shell commands that modify systems, summarize what they do and ask for confirmation.
+Your personality: Direct, efficient, action-oriented.
+Before running shell commands that modify the system, summarize what they do and ask for confirmation.
 
 Rules:
-- Never delete files without explicit confirmation
-- Never run destructive commands without warning
-- Report the exact file paths where things were created/saved
-- If a tool fails, try an alternative approach
+- Never delete files without explicit confirmation.
+- Never run destructive commands without a warning.
+- Report the exact file paths of anything you create or modify.
+- If a tool fails, try an alternative approach and say what you tried.
 """
 
+# ─────────────────────────────────────────────────────────────
+# Tool schemas  (OpenAI function-calling format)
+# Used by: Groq, DeepSeek, OpenRouter, Mistral, Anthropic*
+# *Anthropic gets converted below in _build_anthropic_tools()
+# ─────────────────────────────────────────────────────────────
+
+TOOL_SCHEMAS: list[dict] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read the contents of a file on disk. Supports .txt .md .py .js .ts .json .csv .log .yaml .pdf .docx",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute or ~ path to the file"},
+                    "max_chars": {"type": "integer", "description": "Max characters to return (default 8000)"},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "Write content to a file. Creates the file and parent directories if needed.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute or ~ path to write"},
+                    "content": {"type": "string", "description": "Text content to write"},
+                    "overwrite": {"type": "boolean", "description": "Overwrite if file exists (default false)"},
+                },
+                "required": ["path", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_project",
+            "description": "Create a new project directory with multiple files in one call.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Project folder name"},
+                    "base_path": {"type": "string", "description": "Where to create it (default ~/Downloads)"},
+                    "files_dict": {
+                        "type": "object",
+                        "description": "Map of filename → file content, e.g. {\"main.py\": \"print('hi')\"}",
+                        "additionalProperties": {"type": "string"},
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_dir",
+            "description": "List files and subdirectories at a given path.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Directory path (default '.')"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "download_url",
+            "description": "Download a file from a URL and save it locally.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "URL to download"},
+                    "path": {"type": "string", "description": "Local path to save to (optional)"},
+                    "overwrite": {"type": "boolean", "description": "Overwrite if exists (default false)"},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the web for current information. Returns a summary of top results.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_page",
+            "description": "Fetch and extract readable text from a web page URL.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "URL to fetch"},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_command",
+            "description": (
+                "Run a shell command on Linux/WSL. "
+                "IMPORTANT: always ask the user for confirmation before running commands "
+                "that modify files, install software, or change system state."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Shell command to run"},
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "Set true only after the user has explicitly approved this command",
+                    },
+                    "timeout": {"type": "integer", "description": "Seconds before timeout (default 30)"},
+                },
+                "required": ["command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "diagnose_system",
+            "description": "Inspect system health: CPU, RAM, disk, top processes, crash logs.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["overview", "processes", "crashes", "full"],
+                        "description": "What to inspect (default overview)",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+]
+
+
+# ─────────────────────────────────────────────────────────────
+# Tool executor  (clean dispatch — no regex)
+# ─────────────────────────────────────────────────────────────
+
+async def _call_tool(name: str, args: dict) -> str:
+    """Execute a tool by name with validated args. Returns a plain string result."""
+    try:
+        if name == "read_file":
+            r = files.read_file(args["path"], max_chars=args.get("max_chars", 8000))
+            return r.content if r.success else f"Error: {r.error}"
+
+        elif name == "write_file":
+            r = files.write_file(
+                args["path"],
+                args["content"],
+                overwrite=args.get("overwrite", False),
+            )
+            return r.content if r.success else f"Error: {r.error}"
+
+        elif name == "create_project":
+            r = files.create_project(
+                name=args["name"],
+                base_path=args.get("base_path"),
+                files_dict=args.get("files_dict") or {},
+            )
+            return r.content if r.success else f"Error: {r.error}"
+
+        elif name == "list_dir":
+            r = files.list_dir(args.get("path", "."))
+            return r.content if r.success else f"Error: {r.error}"
+
+        elif name == "download_url":
+            r = files.download_url(
+                url=args["url"],
+                path=args.get("path"),
+                overwrite=args.get("overwrite", False),
+            )
+            return r.content if r.success else f"Error: {r.error}"
+
+        elif name == "web_search":
+            return await web.search_and_summarize(args["query"])
+
+        elif name == "fetch_page":
+            r = await web.fetch_page(args["url"])
+            return r.page_content if r.success else f"Error: {r.error}"
+
+        elif name == "run_command":
+            command = args["command"]
+            confirmed = args.get("confirmed", False)
+
+            # First pass without override — shell.run enforces its own blocklist
+            # and we layer our confirm gate on top via the 'confirmed' arg
+            if not confirmed:
+                # Check for risky patterns before running anything
+                CONFIRM_PATTERNS = [
+                    "rm ", "del ", "rmdir", "format", "reg delete", "reg add",
+                    "netsh", "iptables", "pip install", "npm install -g",
+                    "choco install", "apt install", "apt-get install",
+                    "systemctl", "service ", "sudo ",
+                ]
+                cmd_lower = command.lower()
+                needs_confirm = any(p in cmd_lower for p in CONFIRM_PATTERNS)
+                if needs_confirm:
+                    return (
+                        f"⚠️ This command needs your approval before running:\n\n"
+                        f"```bash\n{command}\n```\n\n"
+                        f"Confirm by replying 'yes, run it' and I'll proceed."
+                    )
+            r = await shell.run(command, timeout=args.get("timeout", 30), override=confirmed)
+            if r.blocked:
+                return f"❌ Blocked: {r.error}"
+            output = r.stdout or r.stderr or "(no output)"
+            status = "✅" if r.success else f"❌ exit {r.returncode}"
+            return f"{status}\n{output}"
+
+        elif name == "diagnose_system":
+            mode = args.get("mode", "overview")
+            fn_map = {
+                "overview": diagnosis.system_overview,
+                "processes": diagnosis.top_processes,
+                "crashes": diagnosis.read_crash_logs,
+                "full": diagnosis.full_diagnosis,
+            }
+            fn = fn_map.get(mode, diagnosis.system_overview)
+            r = await fn()
+            return r.report if r.success else f"Error: {r.error}"
+
+        else:
+            return f"Unknown tool: {name}"
+
+    except KeyError as e:
+        return f"Tool error ({name}): missing required argument {e}"
+    except Exception as e:
+        logger.exception(f"Tool {name} raised")
+        return f"Tool error ({name}): {e}"
+
+
+# ─────────────────────────────────────────────────────────────
+# Provider-specific tool format converters
+# ─────────────────────────────────────────────────────────────
+
+def _to_anthropic_tools(schemas: list[dict]) -> list[dict]:
+    """Convert OpenAI function schemas → Anthropic tools format."""
+    out = []
+    for s in schemas:
+        fn = s["function"]
+        out.append({
+            "name": fn["name"],
+            "description": fn["description"],
+            "input_schema": fn["parameters"],
+        })
+    return out
+
+
+def _to_google_tools(schemas: list[dict]) -> list[dict]:
+    """Convert OpenAI function schemas → Google functionDeclarations format."""
+    declarations = []
+    for s in schemas:
+        fn = s["function"]
+        declarations.append({
+            "name": fn["name"],
+            "description": fn["description"],
+            "parameters": fn["parameters"],
+        })
+    return [{"functionDeclarations": declarations}]
+
+
+# ─────────────────────────────────────────────────────────────
+# Core LLM call with native tool support
+# Returns (response_text, tool_calls_made)
+# ─────────────────────────────────────────────────────────────
+
+async def _llm_call_with_tools(
+    provider,
+    model_id: str,
+    messages: list[dict],   # raw dicts in OpenAI format
+    system: str,
+    provider_name: str,
+) -> tuple[str, list[dict]]:
+    """
+    Single LLM call. Handles the three API shapes:
+      - OpenAI-compatible (Groq, DeepSeek, OpenRouter, Mistral)
+      - Anthropic
+      - Google
+
+    Returns:
+        (text_content, tool_calls)
+        tool_calls: list of {"name": str, "args": dict, "id": str}
+    """
+    import httpx
+
+    if provider_name == "anthropic":
+        # ── Anthropic format ──────────────────────────────────
+        anth_messages = []
+        for m in messages:
+            role = m["role"]
+            content = m["content"]
+            if role == "tool":
+                # tool result → Anthropic wants role=user, content=[tool_result block]
+                anth_messages.append({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": m.get("tool_call_id", ""),
+                        "content": content,
+                    }]
+                })
+            else:
+                anth_messages.append({"role": role, "content": content})
+
+        body = {
+            "model": model_id,
+            "max_tokens": 4096,
+            "system": system,
+            "tools": _to_anthropic_tools(TOOL_SCHEMAS),
+            "messages": anth_messages,
+        }
+        headers = {
+            "x-api-key": provider.api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        async with httpx.AsyncClient(timeout=90) as client:
+            r = await client.post(f"{provider.base_url}/messages", headers=headers, json=body)
+            r.raise_for_status()
+            data = r.json()
+
+        text = ""
+        tool_calls = []
+        for block in data.get("content", []):
+            if block["type"] == "text":
+                text += block["text"]
+            elif block["type"] == "tool_use":
+                tool_calls.append({
+                    "id": block["id"],
+                    "name": block["name"],
+                    "args": block["input"],
+                })
+        return text, tool_calls
+
+    elif provider_name == "google":
+        # ── Google Gemini format ──────────────────────────────
+        contents = []
+        # Inject system as first user/model exchange
+        contents.append({"role": "user", "parts": [{"text": f"[System]: {system}"}]})
+        contents.append({"role": "model", "parts": [{"text": "Understood."}]})
+
+        for m in messages:
+            role = "model" if m["role"] == "assistant" else "user"
+            content = m["content"]
+            if m["role"] == "tool":
+                contents.append({
+                    "role": "user",
+                    "parts": [{"functionResponse": {
+                        "name": m.get("name", "tool"),
+                        "response": {"result": content},
+                    }}]
+                })
+            else:
+                contents.append({"role": role, "parts": [{"text": content}]})
+
+        body = {
+            "contents": contents,
+            "tools": _to_google_tools(TOOL_SCHEMAS),
+            "generationConfig": {"maxOutputTokens": 4096},
+        }
+        url = f"{provider.base_url}/models/{model_id}:generateContent?key={provider.api_key}"
+        async with httpx.AsyncClient(timeout=90) as client:
+            r = await client.post(url, json=body)
+            r.raise_for_status()
+            data = r.json()
+
+        text = ""
+        tool_calls = []
+        candidate = data.get("candidates", [{}])[0]
+        for part in candidate.get("content", {}).get("parts", []):
+            if "text" in part:
+                text += part["text"]
+            elif "functionCall" in part:
+                fc = part["functionCall"]
+                tool_calls.append({
+                    "id": fc["name"],  # Google has no id; use name
+                    "name": fc["name"],
+                    "args": fc.get("args", {}),
+                })
+        return text, tool_calls
+
+    else:
+        # ── OpenAI-compatible (Groq, DeepSeek, OpenRouter, Mistral) ──
+        all_messages = [{"role": "system", "content": system}] + messages
+
+        headers = {"Authorization": f"Bearer {provider.api_key}", "Content-Type": "application/json"}
+        if hasattr(provider, "headers_extra"):
+            headers.update(provider.headers_extra)
+
+        body = {
+            "model": model_id,
+            "messages": all_messages,
+            "max_tokens": 4096,
+            "tools": TOOL_SCHEMAS,
+            "tool_choice": "auto",
+        }
+
+        api_base = provider.base_url
+        async with httpx.AsyncClient(timeout=90) as client:
+            r = await client.post(f"{api_base}/chat/completions", headers=headers, json=body)
+            r.raise_for_status()
+            data = r.json()
+
+        choice = data["choices"][0]
+        msg = choice["message"]
+        text = msg.get("content") or ""
+        tool_calls = []
+        for tc in msg.get("tool_calls") or []:
+            try:
+                args = json.loads(tc["function"]["arguments"])
+            except (json.JSONDecodeError, KeyError):
+                args = {}
+            tool_calls.append({
+                "id": tc["id"],
+                "name": tc["function"]["name"],
+                "args": args,
+            })
+        return text, tool_calls
+
+
+# ─────────────────────────────────────────────────────────────
+# Agentic loop
+# ─────────────────────────────────────────────────────────────
 
 def _log(entry: dict):
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(LOG_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps({**entry, "ts": datetime.now().isoformat()}) + "\n")
-
-
-async def _call_tool(tool_name: str, args: dict) -> str:
-    """Route tool calls to the right function."""
-    try:
-        if tool_name == "web_search":
-            query = str(args.get("query", "")).strip()
-            if not query:
-                return "Error: query required"
-            return await web.search_and_summarize(query)
-
-        elif tool_name == "fetch_page":
-            url = str(args.get("url", "")).strip()
-            if not url:
-                return "Error: url required"
-            r = await web.fetch_page(url)
-            return r.page_content or r.error or "No content"
-
-        elif tool_name == "read_file":
-            path = str(args.get("path", "")).strip()
-            if not path:
-                return "Error: path required"
-            r = files.read_file(path)
-            return r.content or r.error or "Empty file"
-
-        elif tool_name == "write_file":
-            path = str(args.get("path", "")).strip()
-            content = str(args.get("content", ""))
-            overwrite = str(args.get("overwrite", "false")).lower() in ["true", "1", "yes"]
-            if not path:
-                return "Error: path required"
-            r = files.write_file(path, content, overwrite=overwrite)
-            return r.content or r.error
-
-        elif tool_name == "create_project":
-            name = str(args.get("name", "")).strip()
-            base_path = args.get("base_path") and str(args.get("base_path")).strip() or None
-            # files_dict might come as nested dict or string
-            files_arg = args.get("files", {})
-            if isinstance(files_arg, str):
-                import json
-                try:
-                    files_dict = json.loads(files_arg)
-                except:
-                    files_dict = {}
-            else:
-                files_dict = files_arg if isinstance(files_arg, dict) else {}
-            
-            if not name:
-                return "Error: project name required"
-            r = files.create_project(name, base_path=base_path, files_dict=files_dict)
-            return r.content or r.error
-
-        elif tool_name == "list_dir":
-            path = str(args.get("path", ".")).strip()
-            r = files.list_dir(path)
-            return r.content or r.error
-
-        elif tool_name == "download_url":
-            url = str(args.get("url", "")).strip()
-            path = args.get("path") and str(args.get("path")).strip() or None
-            overwrite = str(args.get("overwrite", "false")).lower() in ["true", "1", "yes"]
-            if not url:
-                return "Error: url required"
-            r = files.download_url(url, path=path, overwrite=overwrite)
-            return r.content or r.error
-
-        elif tool_name == "run_command":
-            command = str(args.get("command", "")).strip()
-            if not command:
-                return "Error: command required"
-            check = shell.check_command(command)
-            if check["blocked"]:
-                return f"❌ Blocked: This command is on the safety blocklist."
-            if check["needs_confirm"] and not str(args.get("confirmed", "")).lower() in ["true", "1", "yes"]:
-                return f"⚠️ This command needs confirmation: `{command}`\nReply with confirmed=true to proceed."
-            r = await shell.run(command)
-            out = r.stdout or r.stderr or "(no output)"
-            return f"Exit {r.returncode}:\n{out}"
-
-        elif tool_name == "diagnose_system":
-            mode = str(args.get("mode", "overview")).strip()
-            if mode == "full":
-                r = await diagnosis.full_diagnosis()
-            elif mode == "processes":
-                r = await diagnosis.top_processes()
-            elif mode == "crashes":
-                r = await diagnosis.read_crash_logs()
-            else:
-                r = await diagnosis.system_overview()
-            return r.report or r.error or "No data"
-
-        else:
-            return f"Unknown tool: {tool_name}"
-
-    except Exception as e:
-        return f"Tool error ({tool_name}): {str(e)}"
 
 
 async def run_task(
@@ -166,304 +521,146 @@ async def run_task(
 ) -> dict:
     """
     Main entry point.
-    Returns: { response, model_used, task_type, tool_calls }
+    Returns: { response, model_used, task_type, routing_reason, tool_calls }
     """
     history = history or []
 
     # 1. Classify + route
     decision = route(user_input, force_model=force_model)
 
-    # 2. Get provider
+    # 2. Get provider; walk fallback chain if unavailable
     provider = get_provider(decision.selected_model["provider"])
+    model_id = decision.selected_model["id"]
 
     if not provider.is_available():
-        # Try fallback chain
+        registry = load_registry()
         for fallback_key in decision.fallback_chain:
-            from core.router import load_registry
-            registry = load_registry()
             fb_model = registry["models"][fallback_key]
-            provider = get_provider(fb_model["provider"])
-            if provider.is_available():
+            fb_provider = get_provider(fb_model["provider"])
+            if fb_provider.is_available():
+                provider = fb_provider
+                model_id = fb_model["id"]
                 decision.selected_model = fb_model
                 decision.selected_model_key = fallback_key
                 break
         else:
             return {
-                "response": "No available models. Please check your API keys in .env",
+                "response": "❌ No available models. Check your API keys in .env",
                 "model_used": None,
                 "task_type": decision.task_type,
+                "routing_reason": decision.reason,
                 "tool_calls": [],
             }
 
-    # 3. Build context with tool awareness
-    tool_context = _build_tool_context(decision.task_type, user_input)
-    messages = history + [Message(role="user", content=user_input + tool_context)]
+    provider_name = decision.selected_model["provider"]
 
-    # 4. Call model
-    resp = await provider.complete(
-        messages=messages,
-        model_id=decision.selected_model["id"],
-        system=SYSTEM_PROMPT,
-        max_tokens=2048,
-    )
+    # 3. Build message list (OpenAI format internally)
+    messages: list[dict] = [
+        {"role": m.role, "content": m.content} for m in history
+    ]
+    messages.append({"role": "user", "content": user_input})
 
-    tool_calls = []
+    # 4. Agentic tool loop (max 8 iterations)
+    all_tool_calls: list[dict] = []
+    max_iterations = 8
+    final_text = ""
 
-    if not resp.success:
-        response_text = f"Model error: {resp.error}"
+    for iteration in range(max_iterations):
+        text, tool_calls = await _llm_call_with_tools(
+            provider=provider,
+            model_id=model_id,
+            messages=messages,
+            system=SYSTEM_PROMPT,
+            provider_name=provider_name,
+        )
+
+        if not tool_calls:
+            # Model is done — no more tool calls
+            final_text = text
+            break
+
+        # Append assistant turn with tool call declarations
+        if provider_name == "anthropic":
+            # Anthropic requires tool_use blocks in the assistant content list
+            asst_content = []
+            if text:
+                asst_content.append({"type": "text", "text": text})
+            for tc in tool_calls:
+                asst_content.append({
+                    "type": "tool_use",
+                    "id": tc["id"],
+                    "name": tc["name"],
+                    "input": tc["args"],
+                })
+            messages.append({"role": "assistant", "content": asst_content})
+        else:
+            # OpenAI format: assistant message carries tool_calls array
+            messages.append({
+                "role": "assistant",
+                "content": text or "",
+                "tool_calls": [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {"name": tc["name"], "arguments": json.dumps(tc["args"])},
+                    }
+                    for tc in tool_calls
+                ],
+            })
+
+        # Execute each tool and append results
+        for tc in tool_calls:
+            logger.info(f"Tool call: {tc['name']}({tc['args']})")
+            result = await _call_tool(tc["name"], tc["args"])
+
+            all_tool_calls.append({
+                "tool": tc["name"],
+                "args": tc["args"],
+                "result": result[:500],
+            })
+
+            _log({
+                "tool": tc["name"],
+                "args": {k: str(v)[:100] for k, v in tc["args"].items()},
+                "result_preview": result[:200],
+            })
+
+            if provider_name == "anthropic":
+                messages.append({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": tc["id"],
+                        "content": result,
+                    }],
+                })
+            elif provider_name == "google":
+                messages.append({
+                    "role": "tool",
+                    "name": tc["name"],
+                    "content": result,
+                })
+            else:
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": result,
+                })
+
     else:
-        response_text = resp.content
-        # Parse and execute any tool calls embedded in response
-        tool_calls = await _execute_embedded_tools(response_text)
-        if tool_calls:
-            # Append tool results and re-call model for final answer
-            tool_summary = "\n".join(f"[{t['tool']}]: {t['result']}" for t in tool_calls)
-            followup = messages + [
-                Message(role="assistant", content=response_text),
-                Message(role="user", content=f"Tool results:\n{tool_summary}\n\nNow give your final answer.")
-            ]
-            final_resp = await provider.complete(
-                messages=followup,
-                model_id=decision.selected_model["id"],
-                system=SYSTEM_PROMPT,
-            )
-            if final_resp.success:
-                response_text = final_resp.content
+        final_text += f"\n\n⚠️ Reached iteration limit ({max_iterations})."
 
     _log({
-        "task": user_input[:100],
+        "task": user_input[:120],
         "task_type": decision.task_type,
         "model": decision.selected_model["display_name"],
-        "tools": [t["tool"] for t in tool_calls],
-        "success": resp.success,
+        "tools": [t["tool"] for t in all_tool_calls],
     })
 
     return {
-        "response": response_text,
+        "response": final_text,
         "model_used": decision.selected_model["display_name"],
         "task_type": decision.task_type,
         "routing_reason": decision.reason,
-        "tool_calls": tool_calls,
+        "tool_calls": all_tool_calls,
     }
-
-
-def _build_tool_context(task_type: str, user_input: str) -> str:
-    """Append tool-use instructions to prompt based on task type."""
-    hints = {
-        "web_research": """\n\n**Tools available:**
-- web_search(query=str) — Search the web
-- fetch_page(url=str) — Get full page content
-- download_url(url=str, path=str) — Save a file locally
-Examples:
-  [TOOL:web_search|query=latest AI news]
-  [TOOL:download_url|url=https://example.com/file.pdf,path=~/Downloads/file.pdf]""",
-        "pc_diagnosis": """\n\n**Tool available:**
-- diagnose_system(mode=overview|full|processes|crashes) — Check system health
-Example:
-  [TOOL:diagnose_system|mode=full]""",
-        "shell_automation": """\n\n**Tool available:**
-- run_command(command=str, confirmed=true) — Run shell commands (with confirmation)
-Example:
-  [TOOL:run_command|command=mkdir -p ~/mydir,confirmed=true]""",
-        "document_work": """\n\n**Tools available:**
-- read_file(path=str) — Read any file
-- write_file(path=str, content=str, overwrite=true) — Create/edit files
-- create_project(name=str, base_path=~/Downloads, files={"file1.txt":"content"}) — Create project directory
-- download_url(url=str, path=str) — Download resources
-Examples:
-  [TOOL:write_file|path=~/test.py,content=print('hello')]
-  [TOOL:create_project|name=myapp,base_path=~/Downloads]
-  [TOOL:download_url|url=https://example.com/image.jpg,path=~/Downloads/img.jpg]""",
-        "general": """\n\n**Available tools:**
-- read_file(path=str) — Read files
-- write_file(path=str, content=str) — Write files
-- create_project(name=str, files={...}) — Create projects
-- list_dir(path=str) — List directories
-- run_command(command=str) — Run terminal commands (needs confirmation for dangerous ones)
-- web_search(query=str) — Search online
-- download_url(url=str, path=str) — Download files
-Always include the tool arguments. Example: [TOOL:write_file|path=~/myfile.txt,content=hello world]""",
-    }
-    return hints.get(task_type, hints["general"])
-
-
-async def _execute_embedded_tools(response: str) -> list[dict]:
-    """
-    Look for tool call markers in model response and execute them.
-    Supports:
-    - [TOOL:tool_name|arg1=value1,arg2=value2]  where values can be JSON objects
-    - <invoke name="tool_name"><parameter name="key">value</parameter></invoke>
-    """
-    import re
-    import json
-    
-    results = []
-    
-    # Parse [TOOL:...] format with smart JSON handling
-    pattern = r"\[TOOL:(\w+)\|([^\]]+)\]"
-    for match in re.finditer(pattern, response):
-        tool_name = match.group(1)
-        args_str = match.group(2)
-        
-        # Parse arguments, handling JSON values properly
-        args = _parse_tool_args(args_str)
-        
-        print(f"[DEBUG] [TOOL:...] {tool_name} with args: {list(args.keys())}")
-        if 'files' in args:
-            print(f"[DEBUG]   files type: {type(args['files'])}")
-            if isinstance(args['files'], dict):
-                print(f"[DEBUG]   files dict keys: {list(args['files'].keys())}")
-        
-        result = await _call_tool(tool_name, args)
-        results.append({"tool": tool_name, "args": args, "result": result[:1000]})
-    
-    # Try regex-based XML extraction (more forgiving)
-    try:
-        invoke_pattern = r'<invoke\s+name="(\w+)">(.*?)</invoke>'
-        for invoke_match in re.finditer(invoke_pattern, response, re.DOTALL):
-            tool_name = invoke_match.group(1)
-            invoke_content = invoke_match.group(2)
-            
-            # Extract parameters
-            args = {}
-            param_pattern = r'<parameter\s+name="([^"]+)">(.+?)</parameter>'
-            for param_match in re.finditer(param_pattern, invoke_content, re.DOTALL):
-                param_name = param_match.group(1)
-                param_value = param_match.group(2).strip()
-                
-                # Basic unescaping for common XML entities
-                param_value = param_value.replace('&lt;', '<').replace('&gt;', '>')
-                param_value = param_value.replace('&amp;', '&').replace('&quot;', '"')
-                param_value = param_value.replace('&apos;', "'")
-                # Unescape escaped quotes in strings
-                param_value = param_value.replace('\\"', '"').replace('\\n', '\n')
-                
-                args[param_name] = param_value
-            
-            # Try to parse files parameter as JSON if present
-            if 'files' in args and isinstance(args['files'], str):
-                if '{' in args['files']:
-                    try:
-                        args['files'] = json.loads(args['files'])
-                    except json.JSONDecodeError as e:
-                        # Try to fix common issues: escape literal newlines and quotes
-                        import re as regex
-                        cleaned = args['files']
-                        # Escape control characters that aren't properly escaped
-                        cleaned = regex.sub(r'([^\\])(\n)', r'\1\\n', cleaned)  # Literal newlines
-                        try:
-                            args['files'] = json.loads(cleaned)
-                        except:
-                            print(f"[DEBUG] Still failed to parse files after cleanup: {e}")
-                            # If JSON parsing still fails, just leave it as string
-                            pass
-            
-            print(f"[DEBUG] XML invoke {tool_name} with args: {list(args.keys())}")
-            if 'files' in args and isinstance(args['files'], dict):
-                print(f"[DEBUG]   files dict keys: {list(args['files'].keys())[:5]}")
-            
-            result = await _call_tool(tool_name, args)
-            results.append({"tool": tool_name, "args": args, "result": result[:1000]})
-    except Exception as e:
-        print(f"[DEBUG] XML extraction failed: {e}")
-
-    return results
-
-
-def _parse_tool_args(args_str: str) -> dict:
-    """
-    Parse tool arguments handling JSON values.
-    E.g., 'name=test,base_path=~/Downloads,files={"a":"b","c":"d"}'
-    """
-    import json
-    
-    args = {}
-    i = 0
-    while i < len(args_str):
-        # Find the key=
-        eq_pos = args_str.find('=', i)
-        if eq_pos == -1:
-            break
-        
-        key = args_str[i:eq_pos].strip()
-        
-        # Find the value (could be JSON object, string, or simple value)
-        value_start = eq_pos + 1
-        
-        # Check if value is JSON object or array
-        if value_start < len(args_str) and args_str[value_start] in ('{', '['):
-            # Find matching closing bracket
-            bracket_count = 0
-            closing_pos = value_start
-            in_string = False
-            escape_next = False
-            
-            while closing_pos < len(args_str):
-                char = args_str[closing_pos]
-                
-                if escape_next:
-                    escape_next = False
-                elif char == '\\':
-                    escape_next = True
-                elif char == '"' and (closing_pos == 0 or args_str[closing_pos-1] != '\\'):
-                    in_string = not in_string
-                elif not in_string:
-                    if char in ('{', '['):
-                        bracket_count += 1
-                    elif char in ('}', ']'):
-                        bracket_count -= 1
-                        if bracket_count == 0:
-                            closing_pos += 1
-                            break
-                
-                closing_pos += 1
-            
-            value_str = args_str[value_start:closing_pos]
-            try:
-                args[key] = json.loads(value_str)
-            except json.JSONDecodeError:
-                args[key] = value_str
-            
-            i = closing_pos
-            # Skip comma if present
-            if i < len(args_str) and args_str[i] == ',':
-                i += 1
-        else:
-            # Find next comma
-            comma_pos = args_str.find(',', value_start)
-            if comma_pos == -1:
-                value = args_str[value_start:].strip()
-                i = len(args_str)
-            else:
-                value = args_str[value_start:comma_pos].strip()
-                i = comma_pos + 1
-            
-            # Try to parse as JSON if it looks like JSON
-            if value.startswith('{') or value.startswith('['):
-                try:
-                    args[key] = json.loads(value)
-                except:
-                    args[key] = value
-            else:
-                args[key] = value
-    
-    return args
-
-
-# CLI test
-if __name__ == "__main__":
-    async def main():
-        test_tasks = [
-            "What are the top processes using CPU on my machine?",
-            "Search the web for latest news on open source AI models",
-            "List files in the current directory",
-        ]
-        for task in test_tasks:
-            print(f"\n{'='*60}")
-            print(f"Task: {task}")
-            result = await run_task(task)
-            print(f"Model : {result['model_used']}")
-            print(f"Type  : {result['task_type']}")
-            print(f"Answer: {result['response'][:300]}...")
-
-    asyncio.run(main())

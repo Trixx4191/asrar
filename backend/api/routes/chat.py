@@ -1,7 +1,15 @@
 """
 Route: /chat
-POST /chat        — full response
-POST /chat/stream — real per-token SSE streaming
+POST /chat        — full response (uses agent loop, returns when done)
+POST /chat/stream — SSE streaming with native tool call support
+
+Stream event format (matches what Chat.jsx already expects):
+  data: {"meta": true, "model": "...", "task_type": "...", "reason": "..."}
+  data: {"token": "..."}
+  data: {"tool_start": "tool_name", "args": {...}}
+  data: {"tool_result": "tool_name", "preview": "..."}
+  data: {"done": true, "tool_calls": [...]}
+  data: {"error": "..."}
 """
 
 from fastapi import APIRouter
@@ -9,12 +17,14 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import json
 import sys
+import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from core.agent import run_task
+
+from core.agent import run_task, _call_tool, SYSTEM_PROMPT, TOOL_SCHEMAS
+from core.agent import _to_anthropic_tools, _to_google_tools
 from core.router import route
-from core.classifier import classify_task
 from providers import get_provider
 from providers.base import Message
 
@@ -37,6 +47,7 @@ class ChatResponse(BaseModel):
 
 @router.post("", response_model=ChatResponse)
 async def chat(req: ChatRequest):
+    """Non-streaming chat — runs the full agentic loop and returns."""
     history = [Message(role=m["role"], content=m["content"]) for m in req.history]
     result = await run_task(
         user_input=req.message,
@@ -48,83 +59,339 @@ async def chat(req: ChatRequest):
 
 @router.post("/stream")
 async def chat_stream(req: ChatRequest):
-    """Stream response with tool execution."""
+    """
+    SSE streaming chat with native tool call support.
+
+    Streams tokens as they arrive, then executes tool calls,
+    then continues streaming the final synthesis.
+    """
 
     async def generator():
-        from core.agent import SYSTEM_PROMPT, _build_tool_context, _execute_embedded_tools
-        
+        import httpx
+
         history = [Message(role=m["role"], content=m["content"]) for m in req.history]
-        decision = route(req.message, force_model=req.force_model)
-        provider = get_provider(decision.selected_model["provider"])
 
-        # Send routing metadata first
-        yield f"data: {json.dumps({'meta': True, 'model': decision.selected_model['display_name'], 'task_type': decision.task_type, 'reason': decision.reason})}\n\n"
-
-        full_text = ""
+        # ── Route the request ────────────────────────────────────────
         try:
-            # Build messages
-            tool_ctx = _build_tool_context(decision.task_type, req.message)
-            messages = history + [Message(role="user", content=req.message + tool_ctx)]
-
-            # Build stream args for each provider type
-            provider_name = decision.selected_model["provider"]
-            model_id = decision.selected_model["id"]
-
-            headers, body = _build_stream_payload(provider, provider_name, model_id, messages, SYSTEM_PROMPT)
-
-            # Collect full response as we stream
-            async for token in provider._stream(headers, body, model_id):
-                full_text += token
-                yield f"data: {json.dumps({'token': token})}\n\n"
-
-            # Now execute any embedded tool calls in the full response
-            tool_calls = await _execute_embedded_tools(full_text)
-            
-            if tool_calls:
-                tool_summary = "\n".join(f"[{t['tool']}]: {t['result']}" for t in tool_calls)
-                yield f"data: {json.dumps({'tools_executed': tool_summary})}\n\n"
-
+            decision = route(req.message, force_model=req.force_model)
         except Exception as e:
-            import traceback
-            yield f"data: {json.dumps({'error': str(e), 'trace': traceback.format_exc()})}\n\n"
+            yield f"data: {json.dumps({'error': f'Routing failed: {e}'})}\n\n"
+            return
 
-        yield f"data: {json.dumps({'done': True})}\n\n"
+        provider = get_provider(decision.selected_model["provider"])
+        if not provider.is_available():
+            yield f"data: {json.dumps({'error': 'No available provider. Check API keys in .env'})}\n\n"
+            return
+
+        provider_name = decision.selected_model["provider"]
+        model_id = decision.selected_model["id"]
+
+        # Send metadata so the frontend can show model/task badge immediately
+        yield f"data: {json.dumps({'meta': True, 'model': decision.selected_model['display_name'], 'provider': decision.selected_model.get('provider', ''), 'task_type': decision.task_type, 'reason': decision.reason})}\n\n"
+
+        # ── Build initial message list ───────────────────────────────
+        messages: list[dict] = [
+            {"role": m.role, "content": m.content} for m in history
+        ]
+        messages.append({"role": "user", "content": req.message})
+
+        all_tool_calls: list[dict] = []
+        MAX_ITER = 8
+
+        for iteration in range(MAX_ITER):
+            # ── Build provider-specific streaming request ─────────────
+            try:
+                if provider_name == "anthropic":
+                    anth_messages = _to_anthropic_messages(messages)
+                    headers = {
+                        "x-api-key": provider.api_key,
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json",
+                    }
+                    body = {
+                        "model": model_id,
+                        "max_tokens": 4096,
+                        "system": SYSTEM_PROMPT,
+                        "tools": _to_anthropic_tools(TOOL_SCHEMAS),
+                        "messages": anth_messages,
+                        "stream": True,
+                    }
+                    url = f"{provider.base_url}/messages"
+                    text, tool_calls = await _stream_anthropic(url, headers, body, generator_yield=_sse_token)
+
+                elif provider_name == "google":
+                    contents = _to_google_contents(messages, SYSTEM_PROMPT)
+                    body = {
+                        "contents": contents,
+                        "tools": _to_google_tools(TOOL_SCHEMAS),
+                        "generationConfig": {"maxOutputTokens": 4096},
+                    }
+                    url = f"{provider.base_url}/models/{model_id}:streamGenerateContent?key={provider.api_key}&alt=sse"
+                    text, tool_calls = await _stream_google(url, body, generator_yield=_sse_token)
+
+                else:
+                    # OpenAI-compat: Groq, DeepSeek, OpenRouter, Mistral
+                    all_msgs = [{"role": "system", "content": SYSTEM_PROMPT}] + messages
+                    headers = {"Authorization": f"Bearer {provider.api_key}", "Content-Type": "application/json"}
+                    if hasattr(provider, "headers_extra"):
+                        headers.update(provider.headers_extra)
+                    body = {
+                        "model": model_id,
+                        "messages": all_msgs,
+                        "max_tokens": 4096,
+                        "tools": TOOL_SCHEMAS,
+                        "tool_choice": "auto",
+                        "stream": True,
+                    }
+                    url = f"{provider.base_url}/chat/completions"
+                    text, tool_calls = await _stream_openai_compat(url, headers, body, generator_yield=_sse_token)
+
+            except httpx.HTTPStatusError as e:
+                yield f"data: {json.dumps({'error': f'Provider error {e.response.status_code}: {e.response.text[:200]}'})}\n\n"
+                return
+            except Exception as e:
+                yield f"data: {json.dumps({'error': str(e), 'trace': traceback.format_exc()[:500]})}\n\n"
+                return
+
+            # Stream the text tokens we just collected
+            for tok in _chunk_text(text):
+                yield f"data: {json.dumps({'token': tok})}\n\n"
+
+            if not tool_calls:
+                # No more tool calls — we're done
+                break
+
+            # ── Execute tool calls ────────────────────────────────────
+            # Append assistant turn to history
+            if provider_name == "anthropic":
+                asst_content = []
+                if text:
+                    asst_content.append({"type": "text", "text": text})
+                for tc in tool_calls:
+                    asst_content.append({"type": "tool_use", "id": tc["id"], "name": tc["name"], "input": tc["args"]})
+                messages.append({"role": "assistant", "content": asst_content})
+            else:
+                messages.append({
+                    "role": "assistant",
+                    "content": text or "",
+                    "tool_calls": [
+                        {"id": tc["id"], "type": "function", "function": {"name": tc["name"], "arguments": json.dumps(tc["args"])}}
+                        for tc in tool_calls
+                    ],
+                })
+
+            for tc in tool_calls:
+                # Tell the frontend a tool is starting
+                yield f"data: {json.dumps({'tool_start': tc['name'], 'args': tc['args']})}\n\n"
+
+                result = await _call_tool(tc["name"], tc["args"])
+
+                all_tool_calls.append({"tool": tc["name"], "args": tc["args"], "result": result[:500]})
+
+                # Send a preview of the result
+                yield f"data: {json.dumps({'tool_result': tc['name'], 'preview': result[:300]})}\n\n"
+
+                # Append tool result to messages
+                if provider_name == "anthropic":
+                    messages.append({
+                        "role": "user",
+                        "content": [{"type": "tool_result", "tool_use_id": tc["id"], "content": result}],
+                    })
+                elif provider_name == "google":
+                    messages.append({"role": "tool", "name": tc["name"], "content": result})
+                else:
+                    messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
+
+        yield f"data: {json.dumps({'done': True, 'tool_calls': all_tool_calls})}\n\n"
 
     return StreamingResponse(generator(), media_type="text/event-stream")
 
 
-def _build_stream_payload(provider, provider_name: str, model_id: str, messages, system: str):
-    """Build (headers, body) for streaming per provider type."""
-    from providers.anthropic import AnthropicProvider
-    from providers.google import GoogleProvider
+# ─────────────────────────────────────────────────────────────
+# Per-provider streaming parsers
+# Each returns (full_text, tool_calls_list)
+# tool_calls: [{"id", "name", "args"}]
+# ─────────────────────────────────────────────────────────────
 
-    if isinstance(provider, AnthropicProvider):
-        headers = {
-            "x-api-key": provider.api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        }
-        body = {
-            "model": model_id,
-            "max_tokens": 2048,
-            "stream": True,
-            "system": system,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
-        }
-        return headers, body
+def _sse_token(text: str) -> str:
+    """Helper — returns an SSE line for a text token (not yielded here, just formatted)."""
+    return f"data: {json.dumps({'token': text})}\n\n"
 
-    elif isinstance(provider, GoogleProvider):
-        contents = provider._build_contents(messages, system)
-        headers = {}  # Google uses URL key, no extra headers
-        body = {"contents": contents, "generationConfig": {"maxOutputTokens": 2048}}
-        return headers, body
 
-    else:
-        # OpenAI-compatible (Groq, DeepSeek, OpenRouter, Mistral)
-        all_msgs = [{"role": "system", "content": system}]
-        all_msgs += [{"role": m.role, "content": m.content} for m in messages]
-        headers = {"Authorization": f"Bearer {provider.api_key}", "Content-Type": "application/json"}
-        if hasattr(provider, "headers_extra"):
-            headers.update(provider.headers_extra)
-        body = {"model": model_id, "messages": all_msgs, "max_tokens": 2048, "stream": True}
-        return headers, body
+def _chunk_text(text: str, size: int = 6):
+    """Yield text in small chunks to simulate streaming for non-streaming fallbacks."""
+    for i in range(0, len(text), size):
+        yield text[i:i + size]
+
+
+async def _stream_openai_compat(url: str, headers: dict, body: dict, generator_yield=None):
+    """Stream from any OpenAI-compatible endpoint. Returns (text, tool_calls)."""
+    import httpx
+
+    text = ""
+    tool_calls_acc: dict[int, dict] = {}  # index → {id, name, args_str}
+
+    async with httpx.AsyncClient(timeout=90) as client:
+        async with client.stream("POST", url, headers=headers, json=body) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+
+                delta = chunk.get("choices", [{}])[0].get("delta", {})
+
+                # Text token
+                if delta.get("content"):
+                    text += delta["content"]
+                    # Note: we return accumulated text; caller streams it
+
+                # Tool call deltas
+                for tc in delta.get("tool_calls") or []:
+                    idx = tc["index"]
+                    if idx not in tool_calls_acc:
+                        tool_calls_acc[idx] = {"id": "", "name": "", "args_str": ""}
+                    if tc.get("id"):
+                        tool_calls_acc[idx]["id"] = tc["id"]
+                    fn = tc.get("function", {})
+                    if fn.get("name"):
+                        tool_calls_acc[idx]["name"] = fn["name"]
+                    if fn.get("arguments"):
+                        tool_calls_acc[idx]["args_str"] += fn["arguments"]
+
+    tool_calls = []
+    for v in tool_calls_acc.values():
+        try:
+            args = json.loads(v["args_str"]) if v["args_str"] else {}
+        except json.JSONDecodeError:
+            args = {}
+        tool_calls.append({"id": v["id"], "name": v["name"], "args": args})
+
+    return text, tool_calls
+
+
+async def _stream_anthropic(url: str, headers: dict, body: dict, generator_yield=None):
+    """Stream from Anthropic messages API. Returns (text, tool_calls)."""
+    import httpx
+
+    text = ""
+    tool_calls = []
+    current_tool = None
+
+    async with httpx.AsyncClient(timeout=90) as client:
+        async with client.stream("POST", url, headers=headers, json=body) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                try:
+                    event = json.loads(line[5:].strip())
+                except json.JSONDecodeError:
+                    continue
+
+                etype = event.get("type", "")
+
+                if etype == "content_block_start":
+                    block = event.get("content_block", {})
+                    if block.get("type") == "tool_use":
+                        current_tool = {"id": block["id"], "name": block["name"], "args_str": ""}
+
+                elif etype == "content_block_delta":
+                    delta = event.get("delta", {})
+                    if delta.get("type") == "text_delta":
+                        text += delta.get("text", "")
+                    elif delta.get("type") == "input_json_delta" and current_tool:
+                        current_tool["args_str"] += delta.get("partial_json", "")
+
+                elif etype == "content_block_stop":
+                    if current_tool:
+                        try:
+                            args = json.loads(current_tool["args_str"]) if current_tool["args_str"] else {}
+                        except json.JSONDecodeError:
+                            args = {}
+                        tool_calls.append({"id": current_tool["id"], "name": current_tool["name"], "args": args})
+                        current_tool = None
+
+    return text, tool_calls
+
+
+async def _stream_google(url: str, body: dict, generator_yield=None):
+    """Stream from Google Gemini SSE endpoint. Returns (text, tool_calls)."""
+    import httpx
+
+    text = ""
+    tool_calls = []
+
+    async with httpx.AsyncClient(timeout=90) as client:
+        async with client.stream("POST", url, json=body) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                try:
+                    chunk = json.loads(line[5:].strip())
+                except json.JSONDecodeError:
+                    continue
+
+                candidate = chunk.get("candidates", [{}])[0]
+                for part in candidate.get("content", {}).get("parts", []):
+                    if "text" in part:
+                        text += part["text"]
+                    elif "functionCall" in part:
+                        fc = part["functionCall"]
+                        tool_calls.append({
+                            "id": fc["name"],
+                            "name": fc["name"],
+                            "args": fc.get("args", {}),
+                        })
+
+    return text, tool_calls
+
+
+# ─────────────────────────────────────────────────────────────
+# Message format converters
+# ─────────────────────────────────────────────────────────────
+
+def _to_anthropic_messages(messages: list[dict]) -> list[dict]:
+    """Convert internal message list to Anthropic format."""
+    out = []
+    for m in messages:
+        role = m["role"]
+        content = m.get("content", "")
+        if role == "tool":
+            out.append({
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": m.get("tool_call_id", ""), "content": content}],
+            })
+        elif role == "assistant" and isinstance(content, list):
+            out.append({"role": "assistant", "content": content})
+        else:
+            out.append({"role": role, "content": content})
+    return out
+
+
+def _to_google_contents(messages: list[dict], system: str) -> list[dict]:
+    """Convert internal message list to Google Gemini contents format."""
+    contents = [
+        {"role": "user", "parts": [{"text": f"[System]: {system}"}]},
+        {"role": "model", "parts": [{"text": "Understood."}]},
+    ]
+    for m in messages:
+        role = m["role"]
+        content = m.get("content", "")
+        if role == "tool":
+            contents.append({
+                "role": "user",
+                "parts": [{"functionResponse": {"name": m.get("name", "tool"), "response": {"result": content}}}],
+            })
+        elif role == "assistant":
+            contents.append({"role": "model", "parts": [{"text": content or ""}]})
+        else:
+            contents.append({"role": "user", "parts": [{"text": content}]})
+    return contents
