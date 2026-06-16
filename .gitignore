@@ -9,7 +9,7 @@ build/
 .eggs/
 *.log
 *.sqlite3
-
+data/
 # Virtualenv
 venv/
 .env
