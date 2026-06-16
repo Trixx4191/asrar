@@ -8,7 +8,7 @@ Stream event format (matches what Chat.jsx already expects):
   data: {"token": "..."}
   data: {"tool_start": "tool_name", "args": {...}}
   data: {"tool_result": "tool_name", "preview": "..."}
-  data: {"done": true, "tool_calls": [...]}
+  data: {"done": true, "tool_calls": [...]} 
   data: {"error": "..."}
 """
 
@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from core.agent import run_task, _call_tool, SYSTEM_PROMPT, TOOL_SCHEMAS
 from core.agent import _to_anthropic_tools, _to_google_tools
 from core.router import route
+from core import memory, supervisor
 from providers import get_provider
 from providers.base import Message
 
@@ -33,7 +34,8 @@ router = APIRouter()
 
 class ChatRequest(BaseModel):
     message: str
-    history: list[dict] = []
+    conversation_id: str | None = None
+    history: list[dict] = []  # kept for backward-compat; DB history is used when conversation_id is set
     force_model: str | None = None
 
 
@@ -43,56 +45,102 @@ class ChatResponse(BaseModel):
     task_type: str
     routing_reason: str
     tool_calls: list[dict]
+    conversation_id: str
 
 
 @router.post("", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     """Non-streaming chat — runs the full agentic loop and returns."""
-    history = [Message(role=m["role"], content=m["content"]) for m in req.history]
+    conversation_id = req.conversation_id or memory.create_conversation(
+        title=memory.auto_title(req.message)
+    )
+
+    history = memory.get_messages(conversation_id)
+    memory.add_message(conversation_id, "user", req.message)
+
     result = await run_task(
         user_input=req.message,
         history=history,
         force_model=req.force_model,
+        conversation_id=conversation_id,
     )
-    return ChatResponse(**result)
+
+    memory.add_message(
+        conversation_id,
+        "assistant",
+        result["response"],
+        model=result["model_used"],
+        task_type=result["task_type"],
+        tool_calls=result["tool_calls"],
+    )
+
+    return ChatResponse(**result, conversation_id=conversation_id)
 
 
 @router.post("/stream")
 async def chat_stream(req: ChatRequest):
-    """
-    SSE streaming chat with native tool call support.
-
-    Streams tokens as they arrive, then executes tool calls,
-    then continues streaming the final synthesis.
-    """
+    """SSE streaming chat with native tool call support."""
 
     async def generator():
         import httpx
 
-        history = [Message(role=m["role"], content=m["content"]) for m in req.history]
+        conversation_id = req.conversation_id or memory.create_conversation(
+            title=memory.auto_title(req.message)
+        )
+        yield f"data: {json.dumps({'conversation_id': conversation_id})}\n\n"
 
-        # ── Route the request ────────────────────────────────────────
+        history = memory.get_messages(conversation_id)
+        memory.add_message(conversation_id, "user", req.message)
+
+        # ── Route the request (supervisor-aware: sticky during open clarification) ──
         try:
-            decision = route(req.message, force_model=req.force_model)
+            decision = supervisor.decide_route(conversation_id, req.message, force_model=req.force_model)
         except Exception as e:
             yield f"data: {json.dumps({'error': f'Routing failed: {e}'})}\n\n"
             return
 
-        provider = get_provider(decision.selected_model["provider"])
-        if not provider.is_available():
-            yield f"data: {json.dumps({'error': 'No available provider. Check API keys in .env'})}\n\n"
+        # Resolve provider with fallback-chain support
+        chosen_model = decision.selected_model
+        chosen_model_key = decision.selected_model_key
+        provider_name = chosen_model["provider"]
+        model_id = chosen_model["id"]
+
+        provider = None
+        try:
+            provider = get_provider(provider_name)
+        except Exception:
+            provider = None
+
+        if not provider or not provider.is_available():
+            # Walk fallback chain and pick first model whose provider is available
+            from core.router import load_registry
+
+            registry = load_registry()
+            for fallback_key in decision.fallback_chain:
+                fb_model = registry.get("models", {}).get(fallback_key)
+                if not fb_model:
+                    continue
+                try:
+                    fb_provider = get_provider(fb_model.get("provider", ""))
+                except Exception:
+                    continue
+                if fb_provider.is_available():
+                    chosen_model = fb_model
+                    chosen_model_key = fallback_key
+                    provider_name = chosen_model["provider"]
+                    model_id = chosen_model["id"]
+                    provider = fb_provider
+                    break
+
+        if not provider or not provider.is_available():
+            yield f"data: {json.dumps({'error': 'No available provider/model. Check API keys in .env'})}\n\n"
             return
 
-        provider_name = decision.selected_model["provider"]
-        model_id = decision.selected_model["id"]
-
         # Send metadata so the frontend can show model/task badge immediately
-        yield f"data: {json.dumps({'meta': True, 'model': decision.selected_model['display_name'], 'provider': decision.selected_model.get('provider', ''), 'task_type': decision.task_type, 'reason': decision.reason})}\n\n"
+        yield f"data: {json.dumps({'meta': True, 'model': chosen_model['display_name'], 'provider': chosen_model.get('provider', ''), 'task_type': decision.task_type, 'reason': decision.reason, 'sticky': decision.sticky})}\n\n"
 
         # ── Build initial message list ───────────────────────────────
-        messages: list[dict] = [
-            {"role": m.role, "content": m.content} for m in history
-        ]
+        messages: list[dict] = [{"role": m.role, "content": m.content} for m in history]
         messages.append({"role": "user", "content": req.message})
 
         all_tool_calls: list[dict] = []
@@ -147,7 +195,13 @@ async def chat_stream(req: ChatRequest):
                     text, tool_calls = await _stream_openai_compat(url, headers, body, generator_yield=_sse_token)
 
             except httpx.HTTPStatusError as e:
-                yield f"data: {json.dumps({'error': f'Provider error {e.response.status_code}: {e.response.text[:200]}'})}\n\n"
+                # Avoid ResponseNotRead by not assuming response body is readable
+                status = getattr(getattr(e, "response", None), "status_code", "?")
+                try:
+                    text_preview = e.response.text[:200]  # may raise ResponseNotRead
+                except Exception:
+                    text_preview = "(unable to read error body)"
+                yield f"data: {json.dumps({'error': f'Provider error {status}: {text_preview}'})}\n\n"
                 return
             except Exception as e:
                 yield f"data: {json.dumps({'error': str(e), 'trace': traceback.format_exc()[:500]})}\n\n"
@@ -158,7 +212,6 @@ async def chat_stream(req: ChatRequest):
                 yield f"data: {json.dumps({'token': tok})}\n\n"
 
             if not tool_calls:
-                # No more tool calls — we're done
                 break
 
             # ── Execute tool calls ────────────────────────────────────
@@ -181,17 +234,13 @@ async def chat_stream(req: ChatRequest):
                 })
 
             for tc in tool_calls:
-                # Tell the frontend a tool is starting
                 yield f"data: {json.dumps({'tool_start': tc['name'], 'args': tc['args']})}\n\n"
 
                 result = await _call_tool(tc["name"], tc["args"])
-
                 all_tool_calls.append({"tool": tc["name"], "args": tc["args"], "result": result[:500]})
 
-                # Send a preview of the result
                 yield f"data: {json.dumps({'tool_result': tc['name'], 'preview': result[:300]})}\n\n"
 
-                # Append tool result to messages
                 if provider_name == "anthropic":
                     messages.append({
                         "role": "user",
@@ -201,6 +250,24 @@ async def chat_stream(req: ChatRequest):
                     messages.append({"role": "tool", "name": tc["name"], "content": result})
                 else:
                     messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
+
+        supervisor.after_response(
+            conversation_id,
+            chosen_model_key,
+            chosen_model,
+            decision.task_type,
+            text,
+            all_tool_calls,
+        )
+
+        memory.add_message(
+            conversation_id,
+            "assistant",
+            text or "",
+            model=chosen_model.get("display_name"),
+            task_type=decision.task_type,
+            tool_calls=all_tool_calls,
+        )
 
         yield f"data: {json.dumps({'done': True, 'tool_calls': all_tool_calls})}\n\n"
 
@@ -214,14 +281,14 @@ async def chat_stream(req: ChatRequest):
 # ─────────────────────────────────────────────────────────────
 
 def _sse_token(text: str) -> str:
-    """Helper — returns an SSE line for a text token (not yielded here, just formatted)."""
+    """Helper — returns an SSE line for a text token."""
     return f"data: {json.dumps({'token': text})}\n\n"
 
 
 def _chunk_text(text: str, size: int = 6):
-    """Yield text in small chunks to simulate streaming for non-streaming fallbacks."""
+    """Yield text in small chunks to simulate streaming."""
     for i in range(0, len(text), size):
-        yield text[i:i + size]
+        yield text[i : i + size]
 
 
 async def _stream_openai_compat(url: str, headers: dict, body: dict, generator_yield=None):
@@ -229,7 +296,7 @@ async def _stream_openai_compat(url: str, headers: dict, body: dict, generator_y
     import httpx
 
     text = ""
-    tool_calls_acc: dict[int, dict] = {}  # index → {id, name, args_str}
+    tool_calls_acc: dict[int, dict] = {}
 
     async with httpx.AsyncClient(timeout=90) as client:
         async with client.stream("POST", url, headers=headers, json=body) as resp:
@@ -247,12 +314,9 @@ async def _stream_openai_compat(url: str, headers: dict, body: dict, generator_y
 
                 delta = chunk.get("choices", [{}])[0].get("delta", {})
 
-                # Text token
                 if delta.get("content"):
                     text += delta["content"]
-                    # Note: we return accumulated text; caller streams it
 
-                # Tool call deltas
                 for tc in delta.get("tool_calls") or []:
                     idx = tc["index"]
                     if idx not in tool_calls_acc:
@@ -395,3 +459,4 @@ def _to_google_contents(messages: list[dict], system: str) -> list[dict]:
         else:
             contents.append({"role": "user", "parts": [{"text": content}]})
     return contents
+

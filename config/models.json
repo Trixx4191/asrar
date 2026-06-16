@@ -108,6 +108,20 @@
       "enabled": true,
       "priority": 2,
       "added_at": "2026-06-13T22:43:16.139395"
+    },
+    "qwen3.7": {
+      "id": "qwen/qwen3.7-plus",
+      "provider": "openrouter",
+      "display_name": "Qwen: Qwen3.7 Plus",
+      "api_base": "https://openrouter.ai/api/v1",
+      "strengths": [
+        "multimodal"
+      ],
+      "context_window": 1000000,
+      "free": false,
+      "enabled": true,
+      "priority": 2,
+      "added_at": "2026-06-15T23:54:34.500567"
     }
   },
   "task_model_map": {

@@ -22,6 +22,7 @@ class RoutingDecision:
     selected_model: dict
     fallback_chain: list[str]
     reason: str
+    sticky: bool = False  # True when the supervisor kept this conversation on the same model
 
 
 def load_registry() -> dict:
@@ -30,7 +31,15 @@ def load_registry() -> dict:
 
 
 def get_available_models(registry: dict) -> set[str]:
-    """Return model keys where the provider API key is set in env."""
+    """Return model keys that are considered usable.
+
+    Priority:
+      1) If provider env key is known, check it.
+      2) If provider env key is unknown, fall back to "enabled" only.
+         (provider availability will be checked later via provider.is_available())
+    """
+
+    # Kept for speed/compat, but router no longer blocks unknown providers.
     provider_key_map = {
         "anthropic": "ANTHROPIC_API_KEY",
         "google": "GOOGLE_API_KEY",
@@ -40,18 +49,24 @@ def get_available_models(registry: dict) -> set[str]:
         "openrouter": "OPENROUTER_API_KEY",
     }
 
-    available = set()
+    available: set[str] = set()
     for key, model in registry["models"].items():
         if not model.get("enabled", True):
             continue
-        provider = model["provider"]
+
+        provider = (model.get("provider") or "").lower()
         env_key = provider_key_map.get(provider)
-        if env_key and os.getenv(env_key):
+
+        if env_key:
+            if os.getenv(env_key):
+                available.add(key)
+        else:
+            # Unknown provider: don't prematurely exclude it.
+            # provider.is_available() is enforced later when instantiating the provider.
             available.add(key)
-        elif not env_key:
-            available.add(key)  # no key needed
 
     return available
+
 
 
 def route(user_input: str, force_model: str | None = None) -> RoutingDecision:
