@@ -32,6 +32,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from core.classifier import classify_task
 from core.router import route, load_registry
+from core import supervisor
 from providers import get_provider
 from providers.base import Message
 from tools import web, files, shell, diagnosis
@@ -44,9 +45,18 @@ SYSTEM_PROMPT = """You are Asrār (أسرار), a powerful agentic AI assistant 
 You can work with files, create projects, download resources, run commands, and diagnose system issues.
 
 IMPORTANT AGENTIC BEHAVIOR:
-- When asked to create, edit, or modify files/projects, ALWAYS use your tools — don't just describe what you'd do.
+- When asked to create, edit, or modify files/projects, use your tools to actually do it — don't just describe what you'd do.
 - Use tools for each step. Verify success. Report exact paths and results.
 - Think step-by-step and chain tool calls when needed.
+
+BEFORE CREATING A PROJECT OR NEW FILES:
+- If the request is vague (e.g. "create a project", "build me an app", "make a website") and you don't yet know
+  what it should contain, ASK first instead of calling a tool. Find out: what the project is for, what
+  language/stack to use, and roughly what it should include.
+- Never call create_project or write_file with empty, placeholder, or "TODO" content just to produce something.
+  Every file you create should have real, working content suited to what was asked.
+- It's fine to make reasonable assumptions for small, well-specified asks (e.g. "write a Python script that
+  reverses a string" needs no clarification). Use judgment: ambiguous + multi-file scope → ask; narrow + clear → act.
 
 Your personality: Direct, efficient, action-oriented.
 Before running shell commands that modify the system, summarize what they do and ask for confirmation.
@@ -100,7 +110,11 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "create_project",
-            "description": "Create a new project directory with multiple files in one call.",
+            "description": (
+                "Create a new project directory with multiple real files in one call. "
+                "Do not call this until you know what the project should contain — "
+                "files_dict must hold actual file content, not placeholders."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -108,11 +122,11 @@ TOOL_SCHEMAS: list[dict] = [
                     "base_path": {"type": "string", "description": "Where to create it (default ~/Downloads)"},
                     "files_dict": {
                         "type": "object",
-                        "description": "Map of filename → file content, e.g. {\"main.py\": \"print('hi')\"}",
+                        "description": "Map of filename → real file content, e.g. {\"main.py\": \"print('hi')\"}. Required, must not be empty.",
                         "additionalProperties": {"type": "string"},
                     },
                 },
-                "required": ["name"],
+                "required": ["name", "files_dict"],
             },
         },
     },
@@ -518,15 +532,24 @@ async def run_task(
     user_input: str,
     history: list[Message] | None = None,
     force_model: str | None = None,
+    conversation_id: str | None = None,
 ) -> dict:
     """
     Main entry point.
     Returns: { response, model_used, task_type, routing_reason, tool_calls }
+
+    If conversation_id is given, routing goes through the supervisor:
+    sticky to the same model while a clarifying question is open, fresh
+    classification otherwise. Without a conversation_id, this falls back
+    to plain per-call routing (e.g. for standalone/CLI use).
     """
     history = history or []
 
-    # 1. Classify + route
-    decision = route(user_input, force_model=force_model)
+    # 1. Classify + route (supervisor-aware if we have a conversation to track)
+    if conversation_id:
+        decision = supervisor.decide_route(conversation_id, user_input, force_model=force_model)
+    else:
+        decision = route(user_input, force_model=force_model)
 
     # 2. Get provider; walk fallback chain if unavailable
     provider = get_provider(decision.selected_model["provider"])
@@ -656,6 +679,16 @@ async def run_task(
         "model": decision.selected_model["display_name"],
         "tools": [t["tool"] for t in all_tool_calls],
     })
+
+    if conversation_id:
+        supervisor.after_response(
+            conversation_id,
+            decision.selected_model_key,
+            decision.selected_model,
+            decision.task_type,
+            final_text,
+            all_tool_calls,
+        )
 
     return {
         "response": final_text,

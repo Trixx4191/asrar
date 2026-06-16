@@ -36,6 +36,11 @@ function Message({ msg }) {
         {msg.role === "user" ? "you" : (
           <ModelBadge model={msg.model} taskType={msg.taskType} />
         )}
+        {msg.sticky && (
+          <span className="sticky-badge" title="Stayed with the same model because a clarifying question was still open">
+            ↳ continuing
+          </span>
+        )}
         <span>{msg.time}</span>
       </div>
 
@@ -60,19 +65,104 @@ function Message({ msg }) {
   );
 }
 
+function timeLabel(iso) {
+  if (!iso) return "";
+  try {
+    return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return "";
+  }
+}
+
+function relativeLabel(iso) {
+  if (!iso) return "";
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "now";
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h`;
+  return `${Math.floor(hrs / 24)}d`;
+}
+
+// Normalize a tool_calls entry from the DB (key "tool") into the shape
+// the Message/ToolCall components expect (key "name").
+function normalizeToolCalls(raw) {
+  return (raw || []).map(tc => ({
+    name: tc.name || tc.tool,
+    args: tc.args || {},
+    result: tc.result || "",
+  }));
+}
+
 export default function Chat({ forceModel }) {
-  const [messages, setMessages] = useState([]);
-  const [input, setInput]       = useState("");
-  const [loading, setLoading]   = useState(false);
-  const bottomRef   = useRef(null);
-  const abortRef    = useRef(null);
-  const assistantRef = useRef(null); // tracks the index of the current streaming message
+  const [messages, setMessages]   = useState([]);
+  const [input, setInput]         = useState("");
+  const [loading, setLoading]     = useState(false);
+  const [conversations, setConversations] = useState([]);
+  const [conversationId, setConversationId] = useState(null);
+  const bottomRef     = useRef(null);
+  const abortRef      = useRef(null);
+  const assistantRef  = useRef(null); // tracks the index of the current streaming message
+  const conversationIdRef = useRef(null); // mirrors conversationId for use inside the stream loop
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  useEffect(() => {
+    fetchConversations();
+  }, []);
+
   const now = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+  async function fetchConversations() {
+    try {
+      const r = await fetch(`${API}/conversations`);
+      const d = await r.json();
+      setConversations(d.conversations || []);
+    } catch {
+      // Backend may be offline — leave the rail empty rather than erroring loudly.
+    }
+  }
+
+  async function loadConversation(id) {
+    if (loading) return;
+    try {
+      const r = await fetch(`${API}/conversations/${id}`);
+      if (!r.ok) return;
+      const d = await r.json();
+      const conv = d.conversation;
+      const mapped = (conv.messages || []).map(m => ({
+        role: m.role,
+        content: m.content,
+        time: timeLabel(m.created_at),
+        model: m.model || null,
+        taskType: m.task_type || null,
+        toolCalls: normalizeToolCalls(m.tool_calls),
+      }));
+      setConversationId(id);
+      conversationIdRef.current = id;
+      setMessages(mapped);
+    } catch {
+      // ignore — conversation may have been deleted concurrently
+    }
+  }
+
+  function newChat() {
+    if (loading) return;
+    setConversationId(null);
+    conversationIdRef.current = null;
+    setMessages([]);
+  }
+
+  async function deleteConversation(id, e) {
+    e.stopPropagation();
+    if (!confirm("Delete this conversation? This can't be undone.")) return;
+    await fetch(`${API}/conversations/${id}`, { method: "DELETE" });
+    if (id === conversationId) newChat();
+    fetchConversations();
+  }
 
   // Update a specific field on the current assistant message
   function updateAssistant(updater) {
@@ -86,9 +176,6 @@ export default function Chat({ forceModel }) {
     if (!text || loading) return;
 
     const userMsg = { role: "user", content: text, time: now() };
-
-    // Capture history BEFORE state update
-    const historySnapshot = messages.map(m => ({ role: m.role, content: m.content }));
 
     setMessages(prev => {
       const next = [...prev, userMsg];
@@ -119,7 +206,7 @@ export default function Chat({ forceModel }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           message: text,
-          history: historySnapshot,
+          conversation_id: conversationIdRef.current,
           force_model: forceModel || null,
         }),
         signal: controller.signal,
@@ -128,6 +215,7 @@ export default function Chat({ forceModel }) {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let isNewConversation = !conversationIdRef.current;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -143,12 +231,18 @@ export default function Chat({ forceModel }) {
           try { chunk = JSON.parse(line.slice(5).trim()); }
           catch { continue; }
 
-          if (chunk.meta) {
+          if (chunk.conversation_id) {
+            // Backend created or confirmed the conversation this turn belongs to.
+            conversationIdRef.current = chunk.conversation_id;
+            setConversationId(chunk.conversation_id);
+
+          } else if (chunk.meta) {
             // Routing metadata — update model badge
             updateAssistant(m => ({
               ...m,
               model: { display_name: chunk.model, provider: chunk.provider || "auto" },
               taskType: chunk.task_type,
+              sticky: !!chunk.sticky,
             }));
 
           } else if (chunk.token) {
@@ -190,6 +284,10 @@ export default function Chat({ forceModel }) {
           }
         }
       }
+
+      // Refresh the rail so the (possibly new, possibly re-titled-by-recency) conversation shows up.
+      fetchConversations();
+      if (isNewConversation) { /* nothing else to do — id was captured above */ }
     } catch (e) {
       if (e.name !== "AbortError") {
         updateAssistant(m => ({
@@ -210,11 +308,6 @@ export default function Chat({ forceModel }) {
     updateAssistant(m => ({ ...m, streaming: false }));
   }
 
-  function clearChat() {
-    if (messages.length === 0) return;
-    setMessages([]);
-  }
-
   function onKey(e) {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   }
@@ -225,54 +318,72 @@ export default function Chat({ forceModel }) {
   }
 
   return (
-    <div className="chat-container">
-      <div className="chat-messages">
-        {messages.length === 0 ? (
-          <div className="chat-empty">
-            <div className="chat-empty-glyph">⬡</div>
-            <div className="chat-empty-title">Asrār is ready</div>
-            <div className="chat-empty-hint">
-              Ask anything — browse the web, work on files,<br />
-              run commands, diagnose your PC.
+    <div className="chat-with-rail">
+      {/* Conversation rail — persisted chats, backed by SQLite */}
+      <div className="chat-rail">
+        <div className="chat-rail-header">
+          <button className="chat-rail-new" onClick={newChat}>+ New chat</button>
+        </div>
+        <div className="chat-rail-list">
+          {conversations.length === 0 ? (
+            <div className="chat-rail-empty">No saved chats yet</div>
+          ) : conversations.map(c => (
+            <div
+              key={c.id}
+              className={`chat-rail-item ${c.id === conversationId ? "active" : ""}`}
+              onClick={() => loadConversation(c.id)}
+            >
+              <div className="chat-rail-item-row">
+                <span className="chat-rail-item-title">{c.title}</span>
+                <button
+                  className="chat-rail-item-delete"
+                  onClick={(e) => deleteConversation(c.id, e)}
+                  title="Delete"
+                >✕</button>
+              </div>
+              <span className="chat-rail-item-meta">{c.message_count} msgs · {relativeLabel(c.updated_at)}</span>
             </div>
-          </div>
-        ) : (
-          messages.map((m, i) => <Message key={i} msg={m} />)
-        )}
-        <div ref={bottomRef} />
+          ))}
+        </div>
       </div>
 
-      <div className="chat-input-area">
-        <div className="chat-input-row">
-          <textarea
-            className="chat-textarea"
-            placeholder="Ask Asrār anything..."
-            value={input}
-            onChange={e => { setInput(e.target.value); autoResize(e); }}
-            onKeyDown={onKey}
-            rows={1}
-          />
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            {messages.length > 0 && !loading && (
-              <button
-                onClick={clearChat}
-                title="Clear chat"
-                style={{
-                  width: 34, height: 34, borderRadius: 8,
-                  background: "var(--bg-raised)", color: "var(--text-muted)",
-                  fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center",
-                  border: "1px solid var(--border-soft)",
-                }}
-              >✕</button>
-            )}
-            {loading
-              ? <button className="send-btn" onClick={stop} style={{ background: "var(--red)" }}>■</button>
-              : <button className="send-btn" onClick={send} disabled={!input.trim()}>↑</button>
-            }
-          </div>
+      <div className="chat-container">
+        <div className="chat-messages">
+          {messages.length === 0 ? (
+            <div className="chat-empty">
+              <div className="chat-empty-glyph">⬡</div>
+              <div className="chat-empty-title">Asrār is ready</div>
+              <div className="chat-empty-hint">
+                Ask anything — browse the web, work on files,<br />
+                run commands, diagnose your PC.
+              </div>
+            </div>
+          ) : (
+            messages.map((m, i) => <Message key={i} msg={m} />)
+          )}
+          <div ref={bottomRef} />
         </div>
-        <div className="input-hint">
-          Enter to send · Shift+Enter for new line{loading ? " · ■ to stop" : ""}
+
+        <div className="chat-input-area">
+          <div className="chat-input-row">
+            <textarea
+              className="chat-textarea"
+              placeholder="Ask Asrār anything..."
+              value={input}
+              onChange={e => { setInput(e.target.value); autoResize(e); }}
+              onKeyDown={onKey}
+              rows={1}
+            />
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              {loading
+                ? <button className="send-btn" onClick={stop} style={{ background: "var(--red)" }}>■</button>
+                : <button className="send-btn" onClick={send} disabled={!input.trim()}>↑</button>
+              }
+            </div>
+          </div>
+          <div className="input-hint">
+            Enter to send · Shift+Enter for new line{loading ? " · ■ to stop" : ""}
+          </div>
         </div>
       </div>
     </div>
