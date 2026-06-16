@@ -77,7 +77,7 @@ fallback_enabled    = true       # Try next model if one fails
 explain_routing     = true       # Show which model was picked and why
 confirm_shell_cmds  = true       # Ask before running shell commands
 safe_mode           = false      # Refuse destructive commands unless confirmed
-memory_enabled      = false      # Long-term memory (coming soon)
+memory_enabled      = true       # Long-term memory — conversations persisted in SQLite (data/asrar.db)
 stream_responses    = true       # Stream output token by token
 ```
 
@@ -141,6 +141,8 @@ asrar/
 | Version | Date       | Notes                              |
 |---------|------------|------------------------------------|
 | 0.1.0   | 2026-06-12 | Phase 1: classifier, router, registry |
+| 0.2.0   | 2026-06-16 | Persistent multi-conversation memory (SQLite); agent now asks for project details before creating files instead of generating empty scaffolds |
+| 0.3.0   | 2026-06-16 | Supervisor layer: sticky routing keeps a conversation on the same model while a clarifying question is open (fixes mid-task reclassification), plus an execution_log table for auditing every routing decision |
 
 ---
 

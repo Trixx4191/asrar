@@ -127,60 +127,73 @@ def download_url(url: str, path: str | None = None, overwrite: bool = False) -> 
         return FileResult(success=False, error=f"Download failed: {str(e)}")
 
 
+_PLACEHOLDER_MARKERS = {"todo", "tbd", "placeholder", "// your code here", "# your code here", ""}
+
+
 def create_project(name: str, base_path: str | None = None, files_dict: dict[str, str] | None = None) -> FileResult:
-    """Create a new project directory with optional files.
-    
+    """Create a new project directory with real files.
+
     Args:
         name: Project name
         base_path: Where to create the project (default: ~/Downloads)
-        files_dict: Dict of {filename: content}
-    
+        files_dict: Dict of {filename: content}. Required — must contain at least
+            one file with real, non-placeholder content. If the caller doesn't know
+            yet what the project should contain, it should ask the user first instead
+            of calling this tool.
+
     Example:
         create_project("calculator", files_dict={
             "main.py": "print('hello')",
             "README.md": "# Calculator"
         })
     """
-    print(f"\n[DEBUG create_project] name={name}, base_path={base_path}, files_dict type={type(files_dict)}")
-    if files_dict:
-        if isinstance(files_dict, dict):
-            print(f"[DEBUG create_project] files_dict is dict with {len(files_dict)} items: {list(files_dict.keys())}")
-        else:
-            print(f"[DEBUG create_project] files_dict is {type(files_dict)}: {str(files_dict)[:200]}")
-    else:
-        print(f"[DEBUG create_project] files_dict is None or empty")
-    
     if not name:
         return FileResult(success=False, error="Project name required.")
-    
+
+    if not files_dict or not isinstance(files_dict, dict) or len(files_dict) == 0:
+        return FileResult(
+            success=False,
+            error=(
+                "files_dict is required and cannot be empty. Don't create an empty project — "
+                "ask the user what the project should contain (purpose, language/stack, key files), "
+                "then call create_project again with real file content."
+            ),
+        )
+
+    empty_or_placeholder = [
+        fname for fname, content in files_dict.items()
+        if not str(content).strip() or str(content).strip().lower() in _PLACEHOLDER_MARKERS
+    ]
+    if empty_or_placeholder:
+        return FileResult(
+            success=False,
+            error=(
+                f"These files have no real content: {', '.join(empty_or_placeholder)}. "
+                "Ask the user for the details needed to write actual content, then retry."
+            ),
+        )
+
     try:
         base = Path(base_path or "~/Downloads").expanduser().resolve()
         project_dir = base / name
-        
+
         # Create project directory
         project_dir.mkdir(parents=True, exist_ok=True)
-        
+
         created_files = []
-        if files_dict:
-            for filename, content in files_dict.items():
-                file_path = project_dir / filename
-                file_path.parent.mkdir(parents=True, exist_ok=True)
-                file_path.write_text(str(content), encoding="utf-8")
-                
-                # Verify file was created
-                if not file_path.exists():
-                    return FileResult(success=False, error=f"Failed to create {filename}")
-                created_files.append(filename)
-        
-        summary = f"Project '{name}' created at {project_dir}\n"
-        if created_files:
-            summary += f"Files: {', '.join(created_files)}"
-        
+        for filename, content in files_dict.items():
+            file_path = project_dir / filename
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(str(content), encoding="utf-8")
+
+            # Verify file was created
+            if not file_path.exists():
+                return FileResult(success=False, error=f"Failed to create {filename}")
+            created_files.append(filename)
+
+        summary = f"Project '{name}' created at {project_dir}\nFiles: {', '.join(created_files)}"
         return FileResult(success=True, path=str(project_dir), content=summary)
     except Exception as e:
-        import traceback
-        print(f"[DEBUG create_project] Error: {e}")
-        print(traceback.format_exc())
         return FileResult(success=False, error=f"Project creation failed: {str(e)}")
 
 

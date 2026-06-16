@@ -162,16 +162,21 @@ async def lookup_and_register_model(name_or_url: str) -> dict | None:
     capabilities = await _fetch_openrouter_info(model_id)
 
     if capabilities:
+        detected_provider = _normalize_provider(provider or capabilities.get("provider", "openrouter"))
+        if not detected_provider:
+            detected_provider = "openrouter"
+
         return add_model(
             key=key,
             model_id=capabilities.get("id", model_id),
-            provider=provider or capabilities.get("provider", "openrouter"),
+            provider=detected_provider,
             display_name=capabilities.get("name", model_id),
             strengths=capabilities.get("strengths", ["general"]),
             context_window=capabilities.get("context_length", 32000),
             free=capabilities.get("pricing", {}).get("prompt", "1") == "0",
             priority=2
         )
+
 
     # Fallback: register with basic info
     return add_model(
@@ -184,14 +189,38 @@ async def lookup_and_register_model(name_or_url: str) -> dict | None:
     )
 
 
+def _normalize_provider(p: str | None) -> str | None:
+    if not p:
+        return None
+    p = p.strip().lower()
+    # Some APIs may return provider names with extra characters.
+    p = p.replace("-", "").replace("_", "")
+    # Try to match against our known provider keys.
+    for known in PROVIDER_DEFAULTS.keys():
+        if known == p:
+            return known
+    # If it's close but not exact, keep original lowercase and let router/provider factory decide.
+    return (p or None)
+
+
 def _detect_provider(text: str) -> str | None:
     text = text.lower()
+
+    # 1) explicit provider markers
     for provider in PROVIDER_DEFAULTS:
         if provider in text:
             return provider
-    if "openrouter" in text or "/" in text:
+
+    # 2) OpenRouter-style identifiers (common pattern: "provider/model")
+    if "openrouter" in text:
         return "openrouter"
+
+    # If it looks like "org/model" then default to openrouter since our lookup is OpenRouter-based.
+    if "/" in text:
+        return "openrouter"
+
     return None
+
 
 
 def _extract_model_id(text: str) -> str:
