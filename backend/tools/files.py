@@ -87,6 +87,75 @@ def write_file(path: str, content: str, overwrite: bool = False) -> FileResult:
         return FileResult(success=False, error=str(e))
 
 
+def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = False) -> FileResult:
+    """Replace exact text in an existing file, leaving everything else untouched.
+
+    This is the precise-edit equivalent of Claude Code's Edit tool: old_string
+    must match the file's content exactly (including whitespace/indentation)
+    and must be unique unless replace_all=True. Use this instead of write_file
+    for changing part of a file you didn't just create — it can't accidentally
+    drop unrelated content the way a full-file rewrite can.
+
+    Args:
+        path: File to edit. Must already exist.
+        old_string: Exact text to find. Include enough surrounding context
+            (a line above/below, etc.) to make it unique in the file.
+        new_string: Text to replace it with. Must differ from old_string.
+        replace_all: If True, replace every occurrence instead of requiring
+            exactly one match.
+    """
+    p = Path(path).expanduser().resolve()
+    if not p.exists():
+        return FileResult(success=False, error=f"File not found: {path}. Use write_file to create a new file.")
+
+    if old_string == new_string:
+        return FileResult(success=False, error="old_string and new_string are identical — nothing to change.")
+
+    try:
+        original = p.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        return FileResult(success=False, error=f"Could not read {path}: {e}")
+
+    count = original.count(old_string)
+
+    if count == 0:
+        return FileResult(
+            success=False,
+            error=(
+                "old_string was not found in the file — it must match the existing content "
+                "exactly, including whitespace and indentation. Read the file again and copy "
+                "the exact text you want to replace."
+            ),
+        )
+
+    if count > 1 and not replace_all:
+        return FileResult(
+            success=False,
+            error=(
+                f"old_string matches {count} places in the file, so it's ambiguous which one to "
+                f"replace. Either include more surrounding context to make it unique, or pass "
+                f"replace_all=True to replace every occurrence."
+            ),
+        )
+
+    if replace_all:
+        updated = original.replace(old_string, new_string)
+    else:
+        updated = original.replace(old_string, new_string, 1)
+
+    try:
+        p.write_text(updated, encoding="utf-8")
+    except Exception as e:
+        return FileResult(success=False, error=f"Could not write {path}: {e}")
+
+    occurrences = count if replace_all else 1
+    return FileResult(
+        success=True,
+        path=str(p),
+        content=f"Edited {p} ({occurrences} occurrence{'s' if occurrences != 1 else ''} replaced)",
+    )
+
+
 
 def download_url(url: str, path: str | None = None, overwrite: bool = False) -> FileResult:
     """Download a URL to a local file path."""

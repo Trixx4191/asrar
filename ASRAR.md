@@ -143,6 +143,10 @@ asrar/
 | 0.1.0   | 2026-06-12 | Phase 1: classifier, router, registry |
 | 0.2.0   | 2026-06-16 | Persistent multi-conversation memory (SQLite); agent now asks for project details before creating files instead of generating empty scaffolds |
 | 0.3.0   | 2026-06-16 | Supervisor layer: sticky routing keeps a conversation on the same model while a clarifying question is open (fixes mid-task reclassification), plus an execution_log table for auditing every routing decision |
+| 0.4.0   | 2026-06-16 | update_plan tool (Claude-Code-style TodoWrite equivalent): agent writes a step-by-step checklist before multi-step work and updates it as it progresses; persisted per conversation, shown live in the UI |
+| 0.5.0   | 2026-06-18 | Hooks system (core/hooks.py), modeled on Claude Code's PreToolUse/PostToolUse: multi-file create_project is now blocked until a plan exists for the conversation; destructive shell commands are gated on explicit confirmation; tool failures are flagged into execution_log via PostToolUse review instead of being silently trusted |
+| 0.6.0   | 2026-06-18 | edit_file tool: precise old_string/new_string replacement for existing files (Claude Code's Edit tool equivalent), so the agent doesn't have to rewrite an entire file just to change one part of it. Rejects ambiguous matches, no-ops, and missing files with actionable error messages |
+| 0.7.0   | 2026-06-18 | Full UI redesign — brutalist glass: frosted backdrop-blur panels with hard offset shadows, Space Grotesk for display text, ember-drift ambient background. Fixed model-selection bug where Settings' "Auto-select model" toggle silently overrode the chat dropdown's explicit choice — removed the redundant toggle, the dropdown is now the single source of truth |
 
 ---
 

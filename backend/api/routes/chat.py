@@ -236,7 +236,7 @@ async def chat_stream(req: ChatRequest):
             for tc in tool_calls:
                 yield f"data: {json.dumps({'tool_start': tc['name'], 'args': tc['args']})}\n\n"
 
-                result = await _call_tool(tc["name"], tc["args"])
+                result = await _call_tool(tc["name"], tc["args"], conversation_id=conversation_id)
                 all_tool_calls.append({"tool": tc["name"], "args": tc["args"], "result": result[:500]})
 
                 yield f"data: {json.dumps({'tool_result': tc['name'], 'preview': result[:300]})}\n\n"

@@ -1,7 +1,6 @@
 import { useState } from "react";
 
 const DEFAULTS = {
-  auto_select_model: true,
   fallback_enabled: true,
   explain_routing: true,
   confirm_shell_cmds: true,
@@ -13,7 +12,7 @@ function Toggle({ on, onToggle }) {
   return <div className={`toggle-switch ${on ? "on" : ""}`} onClick={onToggle} />;
 }
 
-export default function Settings({ agentName, onRename, onSettingsChange }) {
+export default function Settings({ agentName, onRename }) {
   const [settings, setSettings] = useState(() => {
     try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem("asrar_settings") || "{}") }; }
     catch { return DEFAULTS; }
@@ -25,7 +24,6 @@ export default function Settings({ agentName, onRename, onSettingsChange }) {
     const next = { ...settings, [key]: !settings[key] };
     setSettings(next);
     localStorage.setItem("asrar_settings", JSON.stringify(next));
-    onSettingsChange?.(next);
   }
 
   function saveIdentity() {
@@ -35,7 +33,6 @@ export default function Settings({ agentName, onRename, onSettingsChange }) {
   }
 
   const rows = [
-    { key: "auto_select_model",   label: "Auto-select model",    desc: "Agent picks the best model per task" },
     { key: "fallback_enabled",    label: "Fallback chain",        desc: "Try next model if primary fails" },
     { key: "explain_routing",     label: "Show routing reason",   desc: "Display which model was chosen and why" },
     { key: "confirm_shell_cmds",  label: "Confirm shell commands",desc: "Ask before running any terminal command" },
@@ -77,6 +74,12 @@ export default function Settings({ agentName, onRename, onSettingsChange }) {
 
         {/* Behavior toggles */}
         <div className="settings-group">
+          <div className="settings-row">
+            <div>
+              <div className="settings-row-label">Model selection</div>
+              <div className="settings-row-desc">Pick a model from the dropdown in the top bar while chatting, or leave it on "Auto-select model"</div>
+            </div>
+          </div>
           {rows.map(r => (
             <div key={r.key} className="settings-row">
               <div>

@@ -27,6 +27,26 @@ function ToolCall({ name, args, result }) {
   );
 }
 
+function PlanPanel({ items }) {
+  if (!items || items.length === 0) return null;
+  const done = items.filter(it => it.status === "completed").length;
+  const icon = { completed: "✓", in_progress: "→", pending: "○" };
+
+  return (
+    <div className="plan-panel">
+      <div className="plan-panel-header">Plan · {done}/{items.length}</div>
+      <div className="plan-panel-items">
+        {items.map((it, i) => (
+          <div key={i} className={`plan-item ${it.status}`}>
+            <span className="plan-item-icon">{icon[it.status] || "○"}</span>
+            <span className="plan-item-text">{it.content}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function Message({ msg }) {
   const parts = (msg.content || "").split("```");
 
@@ -101,6 +121,7 @@ export default function Chat({ forceModel }) {
   const [loading, setLoading]     = useState(false);
   const [conversations, setConversations] = useState([]);
   const [conversationId, setConversationId] = useState(null);
+  const [plan, setPlan]           = useState([]); // current step-by-step plan (update_plan tool)
   const bottomRef     = useRef(null);
   const abortRef      = useRef(null);
   const assistantRef  = useRef(null); // tracks the index of the current streaming message
@@ -144,6 +165,7 @@ export default function Chat({ forceModel }) {
       setConversationId(id);
       conversationIdRef.current = id;
       setMessages(mapped);
+      setPlan(conv.plan || []);
     } catch {
       // ignore — conversation may have been deleted concurrently
     }
@@ -154,6 +176,7 @@ export default function Chat({ forceModel }) {
     setConversationId(null);
     conversationIdRef.current = null;
     setMessages([]);
+    setPlan([]);
   }
 
   async function deleteConversation(id, e) {
@@ -260,6 +283,12 @@ export default function Chat({ forceModel }) {
               }],
             }));
 
+            // The plan tool's args ARE the new plan — show it immediately,
+            // no need to wait for the tool result.
+            if (chunk.tool_start === "update_plan" && Array.isArray(chunk.args?.items)) {
+              setPlan(chunk.args.items);
+            }
+
           } else if (chunk.tool_result) {
             // Tool finished — update the last pending tool entry
             updateAssistant(m => {
@@ -348,6 +377,7 @@ export default function Chat({ forceModel }) {
       </div>
 
       <div className="chat-container">
+        <PlanPanel items={plan} />
         <div className="chat-messages">
           {messages.length === 0 ? (
             <div className="chat-empty">

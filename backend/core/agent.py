@@ -32,7 +32,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from core.classifier import classify_task
 from core.router import route, load_registry
-from core import supervisor
+from core import supervisor, memory, hooks
 from providers import get_provider
 from providers.base import Message
 from tools import web, files, shell, diagnosis
@@ -48,6 +48,13 @@ IMPORTANT AGENTIC BEHAVIOR:
 - When asked to create, edit, or modify files/projects, use your tools to actually do it — don't just describe what you'd do.
 - Use tools for each step. Verify success. Report exact paths and results.
 - Think step-by-step and chain tool calls when needed.
+- For anything that takes more than one tool call (a project with multiple files, multi-step
+  research, anything with 3+ distinct steps), call update_plan FIRST to lay out the steps, then keep
+  it current: mark a step in_progress when you start it, completed when you finish it. This keeps
+  your progress visible instead of the user having to guess what's happening. Skip it for simple,
+  single-step asks — it's not needed for those.
+- Multi-file create_project calls are enforced: call update_plan before create_project if the
+  project will have more than one file, or the call will be blocked.
 
 BEFORE CREATING A PROJECT OR NEW FILES:
 - If the request is vague (e.g. "create a project", "build me an app", "make a website") and you don't yet know
@@ -94,7 +101,12 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Write content to a file. Creates the file and parent directories if needed.",
+            "description": (
+                "Write content to a file, creating it (and parent directories) if needed. "
+                "For an EXISTING file you're only partially changing, prefer edit_file instead — "
+                "write_file replaces the whole file, so it's easy to accidentally drop content "
+                "that should have stayed."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -103,6 +115,35 @@ TOOL_SCHEMAS: list[dict] = [
                     "overwrite": {"type": "boolean", "description": "Overwrite if file exists (default false)"},
                 },
                 "required": ["path", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_file",
+            "description": (
+                "Make a precise edit to an EXISTING file by replacing exact text, leaving the "
+                "rest of the file untouched. Always prefer this over write_file when you're "
+                "changing part of a file rather than creating it from scratch — it can't "
+                "accidentally drop unrelated content. old_string must match the file's current "
+                "content exactly (including whitespace/indentation) and must be unique in the "
+                "file unless replace_all is set; include a line or two of surrounding context "
+                "if needed to make it unique. Read the file first if you're not certain of its "
+                "exact current content."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the existing file to edit"},
+                    "old_string": {"type": "string", "description": "Exact text to find and replace"},
+                    "new_string": {"type": "string", "description": "Text to replace it with"},
+                    "replace_all": {
+                        "type": "boolean",
+                        "description": "Replace every occurrence instead of requiring exactly one match (default false)",
+                    },
+                },
+                "required": ["path", "old_string", "new_string"],
             },
         },
     },
@@ -229,6 +270,41 @@ TOOL_SCHEMAS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_plan",
+            "description": (
+                "Create or update your step-by-step plan for the current task. Call this BEFORE "
+                "starting any task that needs more than one tool call or clearly has multiple steps "
+                "(e.g. creating a project, multi-file edits, research + write-up). Pass the FULL "
+                "current list every time — mark steps 'completed' as you finish them, set the one "
+                "you're working on to 'in_progress', and add new steps if you discover more work. "
+                "Skip this entirely for single-step asks."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "description": "The full current plan, in order.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": {"type": "string", "description": "What this step does"},
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["pending", "in_progress", "completed"],
+                                },
+                            },
+                            "required": ["content", "status"],
+                        },
+                    },
+                },
+                "required": ["items"],
+            },
+        },
+    },
 ]
 
 
@@ -236,8 +312,10 @@ TOOL_SCHEMAS: list[dict] = [
 # Tool executor  (clean dispatch — no regex)
 # ─────────────────────────────────────────────────────────────
 
-async def _call_tool(name: str, args: dict) -> str:
-    """Execute a tool by name with validated args. Returns a plain string result."""
+async def _dispatch_tool(name: str, args: dict, conversation_id: str | None = None) -> str:
+    """The actual tool implementations. Called by _call_tool() only after
+    PreToolUse hooks have approved the call — assume by this point the
+    call is allowed to happen."""
     try:
         if name == "read_file":
             r = files.read_file(args["path"], max_chars=args.get("max_chars", 8000))
@@ -248,6 +326,15 @@ async def _call_tool(name: str, args: dict) -> str:
                 args["path"],
                 args["content"],
                 overwrite=args.get("overwrite", False),
+            )
+            return r.content if r.success else f"Error: {r.error}"
+
+        elif name == "edit_file":
+            r = files.edit_file(
+                args["path"],
+                args["old_string"],
+                args["new_string"],
+                replace_all=args.get("replace_all", False),
             )
             return r.content if r.success else f"Error: {r.error}"
 
@@ -281,25 +368,9 @@ async def _call_tool(name: str, args: dict) -> str:
         elif name == "run_command":
             command = args["command"]
             confirmed = args.get("confirmed", False)
-
-            # First pass without override — shell.run enforces its own blocklist
-            # and we layer our confirm gate on top via the 'confirmed' arg
-            if not confirmed:
-                # Check for risky patterns before running anything
-                CONFIRM_PATTERNS = [
-                    "rm ", "del ", "rmdir", "format", "reg delete", "reg add",
-                    "netsh", "iptables", "pip install", "npm install -g",
-                    "choco install", "apt install", "apt-get install",
-                    "systemctl", "service ", "sudo ",
-                ]
-                cmd_lower = command.lower()
-                needs_confirm = any(p in cmd_lower for p in CONFIRM_PATTERNS)
-                if needs_confirm:
-                    return (
-                        f"⚠️ This command needs your approval before running:\n\n"
-                        f"```bash\n{command}\n```\n\n"
-                        f"Confirm by replying 'yes, run it' and I'll proceed."
-                    )
+            # Destructive-command confirmation is enforced by the
+            # _gate_destructive_commands PreToolUse hook before we ever get
+            # here — by this point either it wasn't risky, or it was approved.
             r = await shell.run(command, timeout=args.get("timeout", 30), override=confirmed)
             if r.blocked:
                 return f"❌ Blocked: {r.error}"
@@ -319,6 +390,25 @@ async def _call_tool(name: str, args: dict) -> str:
             r = await fn()
             return r.report if r.success else f"Error: {r.error}"
 
+        elif name == "update_plan":
+            raw_items = args.get("items") or []
+            cleaned = []
+            for it in raw_items:
+                content = str(it.get("content", "")).strip()
+                status = it.get("status", "pending")
+                if status not in ("pending", "in_progress", "completed"):
+                    status = "pending"
+                if content:
+                    cleaned.append({"content": content, "status": status})
+
+            if conversation_id:
+                memory.set_plan(conversation_id, cleaned)
+
+            done = sum(1 for it in cleaned if it["status"] == "completed")
+            icon = {"completed": "✓", "in_progress": "→", "pending": "☐"}
+            lines = [f"{icon[it['status']]} {it['content']}" for it in cleaned]
+            return f"Plan updated ({done}/{len(cleaned)} done):\n" + "\n".join(lines)
+
         else:
             return f"Unknown tool: {name}"
 
@@ -327,6 +417,31 @@ async def _call_tool(name: str, args: dict) -> str:
     except Exception as e:
         logger.exception(f"Tool {name} raised")
         return f"Tool error ({name}): {e}"
+
+
+async def _call_tool(name: str, args: dict, conversation_id: str | None = None) -> str:
+    """Execute a tool by name with validated args. Returns a plain string result.
+
+    Wraps the real dispatch with Claude-Code-style hooks:
+      - PreToolUse: can block the call entirely before it runs (e.g. a
+        multi-file create_project with no plan yet, or an unconfirmed
+        destructive shell command).
+      - PostToolUse: can't undo what happened, but reviews the result and
+        flags failures into the execution log.
+    """
+    pre = hooks.run_pre_tool_hooks(name, args, conversation_id)
+    if pre.blocked:
+        if conversation_id:
+            memory.log_event(conversation_id, "tool_blocked", {"tool": name, "reason": pre.reason}, model=None)
+        return f"⛔ {pre.reason}"
+
+    result = await _dispatch_tool(name, args, conversation_id=conversation_id)
+
+    post = hooks.run_post_tool_hooks(name, args, result, conversation_id)
+    if post.note and conversation_id:
+        memory.log_event(conversation_id, "tool_flagged", {"tool": name, "note": post.note}, model=None)
+
+    return result
 
 
 # ─────────────────────────────────────────────────────────────
@@ -634,7 +749,7 @@ async def run_task(
         # Execute each tool and append results
         for tc in tool_calls:
             logger.info(f"Tool call: {tc['name']}({tc['args']})")
-            result = await _call_tool(tc["name"], tc["args"])
+            result = await _call_tool(tc["name"], tc["args"], conversation_id=conversation_id)
 
             all_tool_calls.append({
                 "tool": tc["name"],
