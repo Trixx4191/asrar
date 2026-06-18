@@ -48,7 +48,16 @@ async def get_conversation(conversation_id: str):
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
     conv["messages"] = memory.get_messages_full(conversation_id)
+    conv["plan"] = memory.get_plan(conversation_id)
     return {"conversation": conv}
+
+
+@router.get("/{conversation_id}/plan")
+async def get_plan(conversation_id: str):
+    conv = memory.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {"plan": memory.get_plan(conversation_id)}
 
 
 @router.patch("/{conversation_id}")

@@ -108,6 +108,16 @@ def init_db() -> None:
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_exec_log_conv ON execution_log(conversation_id)")
 
+        # Plan — the agent's current checklist for this conversation
+        # (mirrors Claude Code's TodoWrite). One row, overwritten on each update_plan call.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS plans (
+                conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+                items           TEXT NOT NULL,
+                updated_at      TEXT NOT NULL
+            )
+        """)
+
 
 def _now() -> str:
     return datetime.now().isoformat()
@@ -301,6 +311,38 @@ def get_log(conversation_id: str, limit: int = 200) -> list[dict]:
             d["detail"] = {}
         out.append(d)
     return out
+
+
+# ─────────────────────────────────────────────────────────────
+# Plan — the agent's current step-by-step checklist for this
+# conversation (mirrors Claude Code's TodoWrite tool). One row
+# per conversation; each update_plan tool call overwrites it.
+# ─────────────────────────────────────────────────────────────
+
+def set_plan(conversation_id: str, items: list[dict]) -> None:
+    with _conn() as c:
+        c.execute(
+            """INSERT INTO plans (conversation_id, items, updated_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(conversation_id) DO UPDATE SET
+                   items = excluded.items,
+                   updated_at = excluded.updated_at""",
+            (conversation_id, json.dumps(items), _now()),
+        )
+
+
+def get_plan(conversation_id: str) -> list[dict]:
+    with _conn() as c:
+        row = c.execute(
+            "SELECT items FROM plans WHERE conversation_id = ?",
+            (conversation_id,),
+        ).fetchone()
+    if not row:
+        return []
+    try:
+        return json.loads(row["items"])
+    except (json.JSONDecodeError, TypeError):
+        return []
 
 
 # Initialize on import so every module that touches memory gets the schema.

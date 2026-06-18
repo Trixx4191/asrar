@@ -21,16 +21,6 @@ export default function App() {
   const [forceModel, setForceModel] = useState(() => {
     return window.localStorage.getItem("asrar_force_model") || null;
   });
-  const [settings, setSettings] = useState(() => {
-    try {
-      return JSON.parse(window.localStorage.getItem("asrar_settings") || "{}") || {};
-    } catch {
-      return {};
-    }
-  });
-
-  const autoSelectModel = settings.auto_select_model !== false;
-  const activeForceModel = autoSelectModel ? null : forceModel;
 
   // Health check
   useEffect(() => {
@@ -53,27 +43,19 @@ export default function App() {
     window.localStorage.setItem("asrar_force_model", forceModel || "");
   }, [forceModel]);
 
-  function handleSettingsChange(next) {
-    setSettings(next);
-  }
-
   return (
     <div className="app-shell">
       {/* Titlebar */}
       <div className="titlebar">
-        <span style={{ fontFamily: "var(--font-ar)", fontSize: 13, color: "var(--gold)", marginRight: 8 }}>أسرار</span>
-        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{agentName}</span>
+        <span style={{ fontFamily: "var(--font-ar)", fontSize: 14, color: "var(--gold)", marginRight: 8 }}>أسرار</span>
+        <span style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--text-muted)" }}>{agentName}</span>
 
         {/* Model picker */}
         {view === "chat" && models.length > 0 && (
           <div style={{ display: "flex", alignItems: "center", marginLeft: 20, gap: 8 }}>
             <span style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>Model:</span>
             <select
-              style={{
-                background: "var(--bg-raised)", border: "1px solid var(--border)",
-                borderRadius: 6, padding: "4px 10px", fontSize: 11, color: "var(--text-secondary)",
-                fontFamily: "var(--font-mono)", cursor: "pointer",
-              }}
+              className="model-select"
               value={forceModel || ""}
               onChange={e => setForceModel(e.target.value || null)}
             >
@@ -124,10 +106,10 @@ export default function App() {
 
         {/* Main */}
         <div className="main-content">
-          {view === "chat"     && <Chat forceModel={activeForceModel} />}
+          {view === "chat"     && <Chat forceModel={forceModel} />}
           {view === "models"   && <ModelRegistry />}
           {view === "history"  && <TaskHistory />}
-          {view === "settings" && <Settings agentName={agentName} onRename={setAgentName} onSettingsChange={handleSettingsChange} />}
+          {view === "settings" && <Settings agentName={agentName} onRename={setAgentName} />}
         </div>
       </div>
 
