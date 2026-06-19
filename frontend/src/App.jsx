@@ -106,7 +106,7 @@ export default function App() {
 
         {/* Main */}
         <div className="main-content">
-          {view === "chat"     && <Chat forceModel={forceModel} />}
+          {view === "chat"     && <Chat forceModel={forceModel} models={models} onForceModelChange={setForceModel} />}
           {view === "models"   && <ModelRegistry />}
           {view === "history"  && <TaskHistory />}
           {view === "settings" && <Settings agentName={agentName} onRename={setAgentName} />}

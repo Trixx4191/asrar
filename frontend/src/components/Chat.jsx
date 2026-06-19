@@ -115,7 +115,7 @@ function normalizeToolCalls(raw) {
   }));
 }
 
-export default function Chat({ forceModel }) {
+export default function Chat({ forceModel, models = [], onForceModelChange }) {
   const [messages, setMessages]   = useState([]);
   const [input, setInput]         = useState("");
   const [loading, setLoading]     = useState(false);
@@ -405,6 +405,19 @@ export default function Chat({ forceModel }) {
               rows={1}
             />
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              {models.length > 0 && (
+                <select
+                  className="model-select-inline"
+                  value={forceModel || ""}
+                  onChange={e => onForceModelChange?.(e.target.value || null)}
+                  title="Select model for this chat"
+                >
+                  <option value="">Auto</option>
+                  {models.filter(m => m.enabled !== false).map(m => (
+                    <option key={m.key} value={m.key}>{m.display_name.split('/').pop()}</option>
+                  ))}
+                </select>
+              )}
               {loading
                 ? <button className="send-btn" onClick={stop} style={{ background: "var(--red)" }}>■</button>
                 : <button className="send-btn" onClick={send} disabled={!input.trim()}>↑</button>

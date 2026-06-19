@@ -38,6 +38,14 @@ PROVIDER_DEFAULTS = {
         "api_base": "https://api.mistral.ai/v1",
         "env_key": "MISTRAL_API_KEY"
     },
+    "qwen": {
+        "api_base": "https://api.qwen.ai",
+        "env_key": "QWEN_API_KEY"
+    },
+    "kimi": {
+        "api_base": "https://api.kimi.ai",
+        "env_key": "KIMI_API_KEY"
+    },
     "together": {
         "api_base": "https://api.together.xyz/v1",
         "env_key": "TOGETHER_API_KEY"
