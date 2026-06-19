@@ -53,7 +53,21 @@ class GoogleProvider(BaseProvider):
 
             async with httpx.AsyncClient(timeout=60) as client:
                 r = await client.post(url, json=body)
-                r.raise_for_status()
+                try:
+                    r.raise_for_status()
+                except httpx.HTTPStatusError as e:
+                    status = getattr(getattr(e, "response", None), "status_code", "?")
+                    try:
+                        preview = e.response.text[:200]
+                    except Exception:
+                        preview = "(unable to read error body)"
+                    try:
+                        headers = dict(e.response.headers or {})
+                    except Exception:
+                        headers = {}
+                    ra = headers.get("retry-after") or headers.get("Retry-After")
+                    msg = f"Provider HTTP {status}: {preview}" + (f" (retry-after={ra})" if ra else "")
+                    return ProviderResponse(content="", model_id=model_id, provider=self.name, success=False, error=msg)
                 data = r.json()
                 text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
                 return ProviderResponse(content=text, model_id=model_id, provider=self.name)
