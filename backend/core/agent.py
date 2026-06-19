@@ -530,9 +530,23 @@ async def _llm_call_with_tools(
             "content-type": "application/json",
         }
         async with httpx.AsyncClient(timeout=90) as client:
-            r = await client.post(f"{provider.base_url}/messages", headers=headers, json=body)
-            r.raise_for_status()
-            data = r.json()
+            try:
+                r = await client.post(f"{provider.base_url}/messages", headers=headers, json=body)
+                r.raise_for_status()
+                data = r.json()
+            except httpx.HTTPStatusError as e:
+                status = getattr(getattr(e, "response", None), "status_code", "?")
+                try:
+                    preview = e.response.text[:200]
+                except Exception:
+                    preview = "(unable to read error body)"
+                try:
+                    headers = dict(e.response.headers or {})
+                except Exception:
+                    headers = {}
+                ra = headers.get("retry-after") or headers.get("Retry-After")
+                msg = f"Provider HTTP {status}: {preview}" + (f" (retry-after={ra})" if ra else "")
+                return msg, []
 
         text = ""
         tool_calls = []
@@ -575,9 +589,23 @@ async def _llm_call_with_tools(
         }
         url = f"{provider.base_url}/models/{model_id}:generateContent?key={provider.api_key}"
         async with httpx.AsyncClient(timeout=90) as client:
-            r = await client.post(url, json=body)
-            r.raise_for_status()
-            data = r.json()
+            try:
+                r = await client.post(url, json=body)
+                r.raise_for_status()
+                data = r.json()
+            except httpx.HTTPStatusError as e:
+                status = getattr(getattr(e, "response", None), "status_code", "?")
+                try:
+                    preview = e.response.text[:200]
+                except Exception:
+                    preview = "(unable to read error body)"
+                try:
+                    headers = dict(e.response.headers or {})
+                except Exception:
+                    headers = {}
+                ra = headers.get("retry-after") or headers.get("Retry-After")
+                msg = f"Provider HTTP {status}: {preview}" + (f" (retry-after={ra})" if ra else "")
+                return msg, []
 
         text = ""
         tool_calls = []
@@ -612,9 +640,23 @@ async def _llm_call_with_tools(
 
         api_base = provider.base_url
         async with httpx.AsyncClient(timeout=90) as client:
-            r = await client.post(f"{api_base}/chat/completions", headers=headers, json=body)
-            r.raise_for_status()
-            data = r.json()
+            try:
+                r = await client.post(f"{api_base}/chat/completions", headers=headers, json=body)
+                r.raise_for_status()
+                data = r.json()
+            except httpx.HTTPStatusError as e:
+                status = getattr(getattr(e, "response", None), "status_code", "?")
+                try:
+                    preview = e.response.text[:200]
+                except Exception:
+                    preview = "(unable to read error body)"
+                try:
+                    headers = dict(e.response.headers or {})
+                except Exception:
+                    headers = {}
+                ra = headers.get("retry-after") or headers.get("Retry-After")
+                msg = f"Provider HTTP {status}: {preview}" + (f" (retry-after={ra})" if ra else "")
+                return msg, []
 
         choice = data["choices"][0]
         msg = choice["message"]
