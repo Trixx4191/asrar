@@ -48,6 +48,19 @@ class OpenRouterProvider(BaseProvider):
                     input_tokens=data.get("usage", {}).get("prompt_tokens", 0),
                     output_tokens=data.get("usage", {}).get("completion_tokens", 0),
                 )
+        except httpx.HTTPStatusError as e:
+            status = getattr(getattr(e, "response", None), "status_code", "?")
+            try:
+                preview = e.response.text[:200]
+            except Exception:
+                preview = "(unable to read error body)"
+            try:
+                headers = dict(e.response.headers or {})
+            except Exception:
+                headers = {}
+            ra = headers.get("retry-after") or headers.get("Retry-After")
+            msg = f"Provider HTTP {status}: {preview}" + (f" (retry-after={ra})" if ra else "")
+            return ProviderResponse(content="", model_id=model_id, provider=self.name, success=False, error=msg)
         except Exception as e:
             return ProviderResponse(content="", model_id=model_id, provider=self.name, success=False, error=str(e))
 
