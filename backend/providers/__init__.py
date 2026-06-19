@@ -36,6 +36,16 @@ def _load_provider_map():
         provs[AnthropicProvider.name] = AnthropicProvider
     except Exception:
         pass
+    try:
+        from .qwen import QwenProvider
+        provs[QwenProvider.name] = QwenProvider
+    except Exception:
+        pass
+    try:
+        from .kimi import KimiProvider
+        provs[KimiProvider.name] = KimiProvider
+    except Exception:
+        pass
     return provs
 
 

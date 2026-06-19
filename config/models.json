@@ -111,9 +111,9 @@
     },
     "qwen3.7": {
       "id": "qwen/qwen3.7-plus",
-      "provider": "openrouter",
+      "provider": "qwen",
       "display_name": "Qwen: Qwen3.7 Plus",
-      "api_base": "https://openrouter.ai/api/v1",
+      "api_base": "https://api.qwen.ai",
       "strengths": [
         "multimodal"
       ],
@@ -122,6 +122,20 @@
       "enabled": true,
       "priority": 2,
       "added_at": "2026-06-15T23:54:34.500567"
+    },
+    "kimi k2.6": {
+      "id": "kimi-k2.6",
+      "provider": "kimi",
+      "display_name": "Kimi K2.6",
+      "api_base": "https://api.kimi.ai",
+      "strengths": [
+        "general"
+      ],
+      "context_window": 32000,
+      "free": true,
+      "enabled": true,
+      "priority": 2,
+      "added_at": "2026-06-18T23:54:08.531913"
     }
   },
   "task_model_map": {

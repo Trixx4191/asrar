@@ -55,7 +55,7 @@
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-html, body, #root {
+html, body {
   height: 100%;
   width: 100%;
   overflow: hidden;
@@ -65,6 +65,16 @@ html, body, #root {
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
   position: relative;
+  margin: 0;
+  padding: 0;
+}
+
+#root {
+  height: 100%;
+  width: 100%;
+  position: relative;
+  z-index: 1;
+  overflow: hidden;
 }
 
 /* Ambient ember drift — sits behind every glass panel so their blur
@@ -81,9 +91,9 @@ body::before {
   z-index: 0;
   pointer-events: none;
   background:
-    radial-gradient(circle at 16% 14%, rgba(224, 165, 63, 0.16), transparent 38%),
-    radial-gradient(circle at 84% 80%, rgba(224, 165, 63, 0.11), transparent 42%),
-    radial-gradient(circle at 50% 50%, rgba(243, 239, 230, 0.03), transparent 60%);
+    radial-gradient(circle at 16% 14%, rgba(224, 165, 63, 0.22), transparent 38%),
+    radial-gradient(circle at 84% 80%, rgba(224, 165, 63, 0.16), transparent 42%),
+    radial-gradient(circle at 50% 50%, rgba(243, 239, 230, 0.04), transparent 60%);
   animation: emberDrift 24s var(--ease) infinite;
 }
 
@@ -135,11 +145,12 @@ input, textarea {
   display: flex;
   align-items: center;
   padding: 0 16px;
-  background: var(--bg-surface);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: rgba(243, 239, 230, 0.065);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
   border-bottom: 2px solid var(--border);
   flex-shrink: 0;
+  box-shadow: inset 0 1px 0 rgba(243, 239, 230, 0.12);
 }
 
 .titlebar-controls {
@@ -171,26 +182,82 @@ input, textarea {
 
 /* Model picker dropdown in the titlebar */
 .model-select {
-  background: var(--bg-surface);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  border: 1.5px solid var(--border-soft);
+  background: rgba(243, 239, 230, 0.12);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1.5px solid var(--accent);
   border-radius: var(--radius);
-  padding: 5px 28px 5px 10px;
+  padding: 6px 32px 6px 12px;
   font-size: 11px;
-  color: var(--text-secondary);
+  color: var(--accent);
   font-family: var(--font-mono);
+  font-weight: 500;
   cursor: pointer;
   appearance: none;
   -webkit-appearance: none;
-  background-image: linear-gradient(45deg, transparent 50%, var(--text-muted) 50%), linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
-  background-position: calc(100% - 14px) center, calc(100% - 9px) center;
+  background-image: linear-gradient(45deg, transparent 50%, var(--accent) 50%), linear-gradient(135deg, var(--accent) 50%, transparent 50%);
+  background-position: calc(100% - 12px) center, calc(100% - 7px) center;
   background-size: 5px 5px, 5px 5px;
   background-repeat: no-repeat;
-  transition: border-color 0.14s var(--ease), color 0.14s var(--ease);
+  background-color: rgba(243, 239, 230, 0.12);
+  transition: all 0.14s var(--ease);
+  box-shadow: 0 0 0 2px rgba(224, 165, 63, 0.2);
 }
-.model-select:hover { border-color: var(--accent); color: var(--text-primary); }
-.model-select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.model-select:hover { 
+  background-color: rgba(243, 239, 230, 0.16);
+  border-color: var(--gold);
+  box-shadow: 0 0 0 3px rgba(224, 165, 63, 0.25);
+}
+.model-select:focus { 
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+  outline: none;
+}
+.model-select option {
+  background: var(--void);
+  color: var(--text-primary);
+  padding: 8px;
+}
+
+/* Inline model selector in chat input area */
+.model-select-inline {
+  background: rgba(243, 239, 230, 0.12);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1.5px solid var(--accent-soft);
+  border-radius: var(--radius);
+  padding: 6px 24px 6px 10px;
+  font-size: 11px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-weight: 500;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--accent) 50%), linear-gradient(135deg, var(--accent) 50%, transparent 50%);
+  background-position: calc(100% - 8px) center, calc(100% - 3px) center;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+  background-color: rgba(243, 239, 230, 0.12);
+  transition: all 0.14s var(--ease);
+  box-shadow: inset 0 1px 0 rgba(243, 239, 230, 0.08);
+  min-width: 90px;
+}
+.model-select-inline:hover { 
+  background-color: rgba(243, 239, 230, 0.15);
+  border-color: var(--gold);
+  box-shadow: 0 0 0 2px rgba(224, 165, 63, 0.2), inset 0 1px 0 rgba(243, 239, 230, 0.08);
+}
+.model-select-inline:focus { 
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft), inset 0 1px 0 rgba(243, 239, 230, 0.08);
+  outline: none;
+}
+.model-select-inline option {
+  background: var(--void);
+  color: var(--text-primary);
+  padding: 8px;
+}
 
 
 /* Layout */
@@ -209,14 +276,15 @@ input, textarea {
 /* Sidebar */
 .sidebar {
   width: var(--sidebar-w);
-  background: var(--bg-surface);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: rgba(243, 239, 230, 0.08);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
   border-right: 2px solid var(--border);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
   overflow: hidden;
+  box-shadow: inset 0 1px 0 rgba(243, 239, 230, 0.08);
 }
 
 .sidebar-logo {
@@ -334,11 +402,12 @@ input, textarea {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  background: var(--bg-surface);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: rgba(243, 239, 230, 0.07);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
   border-right: 2px solid var(--border);
   overflow: hidden;
+  box-shadow: inset 0 1px 0 rgba(243, 239, 230, 0.08);
 }
 
 .chat-rail-header {
@@ -450,12 +519,12 @@ input, textarea {
   margin: 14px 32px 0;
   border: 2px solid var(--border);
   border-radius: var(--radius-lg);
-  background: var(--bg-surface);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
+  background: rgba(243, 239, 230, 0.1);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
   overflow: hidden;
   flex-shrink: 0;
-  box-shadow: 3px 3px 0 0 var(--accent-soft);
+  box-shadow: 3px 3px 0 0 var(--accent-soft), inset 0 1px 0 rgba(243, 239, 230, 0.1);
 }
 
 .plan-panel-header {
@@ -556,19 +625,20 @@ input, textarea {
   border-radius: var(--radius-lg);
   line-height: 1.65;
   font-size: 13.5px;
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: inset 0 1px 0 rgba(243, 239, 230, 0.1);
 }
 
 .message.user .message-bubble {
-  background: var(--accent-soft);
+  background: rgba(224, 165, 63, 0.18);
   border: 2px solid var(--accent);
   color: var(--text-primary);
   border-bottom-right-radius: 3px;
 }
 
 .message.assistant .message-bubble {
-  background: var(--bg-raised);
+  background: rgba(243, 239, 230, 0.09);
   border: 1.5px solid var(--border-soft);
   color: var(--text-primary);
   border-bottom-left-radius: 3px;
@@ -604,13 +674,14 @@ input, textarea {
   display: flex;
   gap: 4px;
   padding: 14px 16px;
-  background: var(--bg-raised);
+  background: rgba(243, 239, 230, 0.09);
   border: 1.5px solid var(--border-soft);
   border-radius: var(--radius-lg);
   border-bottom-left-radius: 3px;
   width: fit-content;
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: inset 0 1px 0 rgba(243, 239, 230, 0.08);
 }
 
 .typing-dot {
@@ -637,18 +708,20 @@ input, textarea {
   display: flex;
   align-items: flex-end;
   gap: 10px;
-  background: var(--bg-surface);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
+  background: rgba(243, 239, 230, 0.11);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
   border: 2px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 12px 14px;
-  transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+  transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease), background 0.15s var(--ease);
+  box-shadow: inset 0 1px 0 rgba(243, 239, 230, 0.12);
 }
 
 .chat-input-row:focus-within {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-glow);
+  box-shadow: 0 0 0 3px var(--accent-glow), inset 0 1px 0 rgba(243, 239, 230, 0.12);
+  background: rgba(243, 239, 230, 0.14);
 }
 
 
