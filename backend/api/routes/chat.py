@@ -197,11 +197,18 @@ async def chat_stream(req: ChatRequest):
             except httpx.HTTPStatusError as e:
                 # Avoid ResponseNotRead by not assuming response body is readable
                 status = getattr(getattr(e, "response", None), "status_code", "?")
+                # Try to get a small preview of the response body, but fall back to headers
                 try:
-                    text_preview = e.response.text[:200]  # may raise ResponseNotRead
+                    text_preview = e.response.text[:200]
                 except Exception:
                     text_preview = "(unable to read error body)"
-                yield f"data: {json.dumps({'error': f'Provider error {status}: {text_preview}'})}\n\n"
+                try:
+                    headers = dict(e.response.headers or {})
+                except Exception:
+                    headers = {}
+                ra = headers.get("retry-after") or headers.get("Retry-After")
+                hdr_preview = f" headers.retry-after={ra}" if ra else ""
+                yield f"data: {json.dumps({'error': f'Provider error {status}: {text_preview}{hdr_preview}', 'headers': headers})}\n\n"
                 return
             except Exception as e:
                 yield f"data: {json.dumps({'error': str(e), 'trace': traceback.format_exc()[:500]})}\n\n"
