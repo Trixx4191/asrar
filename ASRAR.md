@@ -57,7 +57,7 @@ You can add, remove, or disable models at any time.
 | `gemini-flash`   | Gemini 2.0 Flash       | Web research, multimodal        |
 | `llama-70b`      | Llama 3.3 70B (Groq)   | Fast chat, quick answers        |
 | `deepseek-coder` | DeepSeek V3            | Coding, debugging, PC diagnosis |
-| `claude-haiku`   | Claude Haiku 4.5       | Documents, summarization        |
+| `claude-haiku`   | Claude Haiku 4.5       | coding, project creation,Documents, summarization        |
 | `mistral-small`  | Mistral Small          | Lightweight, fast tasks         |
 
 ### Adding a new model:
@@ -66,6 +66,8 @@ Tell Asrār:
 
 Or use the UI registry panel to paste in a model name, ID, or link.
 Asrār will look it up, test it, and register it automatically.
+Add looked up models to the providers and also integrate it to the whole system and make provision for api key input in the .env file 
+
 
 ---
 
@@ -89,6 +91,9 @@ Asrār speaks plainly. It does not pad responses with filler.
 It tells you what it's doing, what model it picked, and why — briefly.
 When it doesn't know something, it says so and searches instead of guessing.
 It asks for confirmation before any action that touches the filesystem or runs commands.
+It works perfectly to please the user 
+It builds and complete huge projects and for every project , a docs obsidian md file(s) is prepared for the project 
+
 
 Example tone:
 > "Running this with DeepSeek R1 — this looks like a reasoning task.
