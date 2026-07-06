@@ -675,6 +675,10 @@ async def _llm_call_with_tools(
         return text, tool_calls
 
 
+def _is_provider_error_text(text: str) -> bool:
+    return isinstance(text, str) and text.strip().startswith("Provider HTTP")
+
+
 # ─────────────────────────────────────────────────────────────
 # Agentic loop
 # ─────────────────────────────────────────────────────────────
@@ -708,127 +712,130 @@ async def run_task(
     else:
         decision = route(user_input, force_model=force_model)
 
-    # 2. Get provider; walk fallback chain if unavailable
-    provider = get_provider(decision.selected_model["provider"])
-    model_id = decision.selected_model["id"]
-
-    if not provider.is_available():
-        registry = load_registry()
-        for fallback_key in decision.fallback_chain:
-            fb_model = registry["models"][fallback_key]
-            fb_provider = get_provider(fb_model["provider"])
-            if fb_provider.is_available():
-                provider = fb_provider
-                model_id = fb_model["id"]
-                decision.selected_model = fb_model
-                decision.selected_model_key = fallback_key
-                break
-        else:
-            return {
-                "response": "❌ No available models. Check your API keys in .env",
-                "model_used": None,
-                "task_type": decision.task_type,
-                "routing_reason": decision.reason,
-                "tool_calls": [],
-            }
-
-    provider_name = decision.selected_model["provider"]
-
-    # 3. Build message list (OpenAI format internally)
-    messages: list[dict] = [
-        {"role": m.role, "content": m.content} for m in history
-    ]
-    messages.append({"role": "user", "content": user_input})
-
-    # 4. Agentic tool loop (max 8 iterations)
-    all_tool_calls: list[dict] = []
-    max_iterations = 8
+    registry = load_registry()
+    candidate_keys = [decision.selected_model_key] + decision.fallback_chain
     final_text = ""
+    all_tool_calls: list[dict] = []
+    last_error = None
+    success = False
 
-    for iteration in range(max_iterations):
-        text, tool_calls = await _llm_call_with_tools(
-            provider=provider,
-            model_id=model_id,
-            messages=messages,
-            system=SYSTEM_PROMPT,
-            provider_name=provider_name,
-        )
+    for model_key in candidate_keys:
+        model = registry["models"].get(model_key)
+        if not model:
+            continue
+        try:
+            provider = get_provider(model["provider"])
+        except Exception:
+            continue
+        if not provider.is_available():
+            continue
 
-        if not tool_calls:
-            # Model is done — no more tool calls
-            final_text = text
-            break
+        attempt_messages = [{"role": m.role, "content": m.content} for m in history]
+        attempt_messages.append({"role": "user", "content": user_input})
+        attempt_tool_calls: list[dict] = []
+        attempt_text = ""
+        attempt_failed = False
 
-        # Append assistant turn with tool call declarations
-        if provider_name == "anthropic":
-            # Anthropic requires tool_use blocks in the assistant content list
-            asst_content = []
-            if text:
-                asst_content.append({"type": "text", "text": text})
-            for tc in tool_calls:
-                asst_content.append({
-                    "type": "tool_use",
-                    "id": tc["id"],
-                    "name": tc["name"],
-                    "input": tc["args"],
-                })
-            messages.append({"role": "assistant", "content": asst_content})
-        else:
-            # OpenAI format: assistant message carries tool_calls array
-            messages.append({
-                "role": "assistant",
-                "content": text or "",
-                "tool_calls": [
-                    {
+        for iteration in range(8):
+            text, tool_calls = await _llm_call_with_tools(
+                provider=provider,
+                model_id=model["id"],
+                messages=attempt_messages,
+                system=SYSTEM_PROMPT,
+                provider_name=model["provider"],
+            )
+
+            if _is_provider_error_text(text) and not tool_calls:
+                last_error = f"{model['display_name']}: {text}"
+                attempt_failed = True
+                break
+
+            if not tool_calls:
+                attempt_text = text
+                break
+
+            if model["provider"] == "anthropic":
+                asst_content = []
+                if text:
+                    asst_content.append({"type": "text", "text": text})
+                for tc in tool_calls:
+                    asst_content.append({
+                        "type": "tool_use",
                         "id": tc["id"],
-                        "type": "function",
-                        "function": {"name": tc["name"], "arguments": json.dumps(tc["args"])},
-                    }
-                    for tc in tool_calls
-                ],
-            })
-
-        # Execute each tool and append results
-        for tc in tool_calls:
-            logger.info(f"Tool call: {tc['name']}({tc['args']})")
-            result = await _call_tool(tc["name"], tc["args"], conversation_id=conversation_id)
-
-            all_tool_calls.append({
-                "tool": tc["name"],
-                "args": tc["args"],
-                "result": result[:500],
-            })
-
-            _log({
-                "tool": tc["name"],
-                "args": {k: str(v)[:100] for k, v in tc["args"].items()},
-                "result_preview": result[:200],
-            })
-
-            if provider_name == "anthropic":
-                messages.append({
-                    "role": "user",
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": tc["id"],
-                        "content": result,
-                    }],
-                })
-            elif provider_name == "google":
-                messages.append({
-                    "role": "tool",
-                    "name": tc["name"],
-                    "content": result,
-                })
+                        "name": tc["name"],
+                        "input": tc["args"],
+                    })
+                attempt_messages.append({"role": "assistant", "content": asst_content})
             else:
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": result,
+                attempt_messages.append({
+                    "role": "assistant",
+                    "content": text or "",
+                    "tool_calls": [
+                        {
+                            "id": tc["id"],
+                            "type": "function",
+                            "function": {"name": tc["name"], "arguments": json.dumps(tc["args"])},
+                        }
+                        for tc in tool_calls
+                    ],
                 })
 
-    else:
-        final_text += f"\n\n⚠️ Reached iteration limit ({max_iterations})."
+            for tc in tool_calls:
+                logger.info(f"Tool call: {tc['name']}({tc['args']})")
+                result = await _call_tool(tc["name"], tc["args"], conversation_id=conversation_id)
+                attempt_tool_calls.append({
+                    "tool": tc["name"],
+                    "args": tc["args"],
+                    "result": result[:500],
+                })
+                _log({
+                    "tool": tc["name"],
+                    "args": {k: str(v)[:100] for k, v in tc["args"].items()},
+                    "result_preview": result[:200],
+                })
+
+                if model["provider"] == "anthropic":
+                    attempt_messages.append({
+                        "role": "user",
+                        "content": [{
+                            "type": "tool_result",
+                            "tool_use_id": tc["id"],
+                            "content": result,
+                        }],
+                    })
+                elif model["provider"] == "google":
+                    attempt_messages.append({
+                        "role": "tool",
+                        "name": tc["name"],
+                        "content": result,
+                    })
+                else:
+                    attempt_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": result,
+                    })
+
+        if attempt_failed:
+            continue
+
+        success = True
+        final_text = attempt_text
+        all_tool_calls = attempt_tool_calls
+        if model_key != candidate_keys[0]:
+            decision.reason += f" Fallbacked to '{model['display_name']}' after an earlier model failed."
+        decision.selected_model = model
+        decision.selected_model_key = model_key
+        break
+
+    if not success:
+        return {
+            "response": f"❌ All selected models failed: {last_error or 'no available models could complete the request.'}",
+            "model_used": None,
+            "task_type": decision.task_type,
+            "routing_reason": decision.reason,
+            "tool_calls": [],
+        }
 
     _log({
         "task": user_input[:120],

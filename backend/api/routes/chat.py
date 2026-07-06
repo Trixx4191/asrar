@@ -105,43 +105,115 @@ async def chat_stream(req: ChatRequest):
         provider_name = chosen_model["provider"]
         model_id = chosen_model["id"]
 
+        from core.router import load_registry
+
+        registry = load_registry()
+        candidate_keys = [chosen_model_key] + decision.fallback_chain
+        messages: list[dict] = [{"role": m.role, "content": m.content} for m in history]
+        messages.append({"role": "user", "content": req.message})
+
         provider = None
-        try:
-            provider = get_provider(provider_name)
-        except Exception:
-            provider = None
+        text = ""
+        tool_calls: list[dict] = []
+        last_error = None
 
-        if not provider or not provider.is_available():
-            # Walk fallback chain and pick first model whose provider is available
-            from core.router import load_registry
+        for model_key in candidate_keys:
+            candidate_model = registry.get("models", {}).get(model_key)
+            if not candidate_model:
+                continue
+            try:
+                candidate_provider = get_provider(candidate_model.get("provider", ""))
+            except Exception:
+                continue
+            if not candidate_provider.is_available():
+                continue
 
-            registry = load_registry()
-            for fallback_key in decision.fallback_chain:
-                fb_model = registry.get("models", {}).get(fallback_key)
-                if not fb_model:
-                    continue
+            provider = candidate_provider
+            chosen_model = candidate_model
+            chosen_model_key = model_key
+            provider_name = chosen_model["provider"]
+            model_id = chosen_model["id"]
+
+            try:
+                if provider_name == "anthropic":
+                    anth_messages = _to_anthropic_messages(messages)
+                    headers = {
+                        "x-api-key": provider.api_key,
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json",
+                    }
+                    body = {
+                        "model": model_id,
+                        "max_tokens": 4096,
+                        "system": SYSTEM_PROMPT,
+                        "tools": _to_anthropic_tools(TOOL_SCHEMAS),
+                        "messages": anth_messages,
+                        "stream": True,
+                    }
+                    url = f"{provider.base_url}/messages"
+                    text, tool_calls = await _stream_anthropic(url, headers, body, generator_yield=_sse_token)
+
+                elif provider_name == "google":
+                    contents = _to_google_contents(messages, SYSTEM_PROMPT)
+                    body = {
+                        "contents": contents,
+                        "tools": _to_google_tools(TOOL_SCHEMAS),
+                        "generationConfig": {"maxOutputTokens": 4096},
+                    }
+                    url = f"{provider.base_url}/models/{model_id}:streamGenerateContent?key={provider.api_key}&alt=sse"
+                    text, tool_calls = await _stream_google(url, body, generator_yield=_sse_token)
+
+                else:
+                    all_msgs = [{"role": "system", "content": SYSTEM_PROMPT}] + messages
+                    headers = {"Authorization": f"Bearer {provider.api_key}", "Content-Type": "application/json"}
+                    if hasattr(provider, "headers_extra"):
+                        headers.update(provider.headers_extra)
+                    body = {
+                        "model": model_id,
+                        "messages": all_msgs,
+                        "max_tokens": 4096,
+                        "tools": TOOL_SCHEMAS,
+                        "tool_choice": "auto",
+                        "stream": True,
+                    }
+                    url = f"{provider.base_url}/chat/completions"
+                    text, tool_calls = await _stream_openai_compat(url, headers, body, generator_yield=_sse_token)
+
+                break
+            except httpx.HTTPStatusError as e:
+                status = getattr(getattr(e, "response", None), "status_code", "?")
                 try:
-                    fb_provider = get_provider(fb_model.get("provider", ""))
+                    text_preview = e.response.text[:200]
                 except Exception:
-                    continue
-                if fb_provider.is_available():
-                    chosen_model = fb_model
-                    chosen_model_key = fallback_key
-                    provider_name = chosen_model["provider"]
-                    model_id = chosen_model["id"]
-                    provider = fb_provider
-                    break
+                    text_preview = "(unable to read error body)"
+                try:
+                    headers = dict(e.response.headers or {})
+                except Exception:
+                    headers = {}
+                ra = headers.get("retry-after") or headers.get("Retry-After")
+                last_error = f"Provider error {status}: {text_preview}" + (f" (retry-after={ra})" if ra else "")
+                continue
+            except Exception as e:
+                last_error = str(e)
+                continue
 
-        if not provider or not provider.is_available():
-            yield f"data: {json.dumps({'error': 'No available provider/model. Check API keys in .env'})}\n\n"
+        if not provider or not text:
+            yield f"data: {json.dumps({'error': f'No available provider/model. Check API keys in .env or no provider succeeded. Last error: {last_error}'})}\n\n"
             return
 
-        # Send metadata so the frontend can show model/task badge immediately
+        if chosen_model is None:
+            yield f"data: {json.dumps({'error': 'No model could be selected for streaming.'})}\n\n"
+            return
+
+        if chosen_model_key != decision.selected_model_key:
+            decision.reason += f" Fallbacked to '{chosen_model['display_name']}' after an earlier model failed."
+            decision.selected_model = chosen_model
+            decision.selected_model_key = chosen_model_key
+
         yield f"data: {json.dumps({'meta': True, 'model': chosen_model['display_name'], 'provider': chosen_model.get('provider', ''), 'task_type': decision.task_type, 'reason': decision.reason, 'sticky': decision.sticky})}\n\n"
 
         # ── Build initial message list ───────────────────────────────
-        messages: list[dict] = [{"role": m.role, "content": m.content} for m in history]
-        messages.append({"role": "user", "content": req.message})
+        # (messages already includes the user turn)
 
         all_tool_calls: list[dict] = []
         MAX_ITER = 8
