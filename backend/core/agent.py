@@ -35,7 +35,7 @@ from core.router import route, load_registry
 from core import supervisor, memory, hooks
 from providers import get_provider
 from providers.base import Message
-from tools import web, files, shell, diagnosis
+from tools import web, files, shell, diagnosis, testing, codesearch
 
 logger = logging.getLogger("asrar.agent")
 LOG_PATH = ROOT / "logs" / "actions.log"
@@ -55,6 +55,27 @@ IMPORTANT AGENTIC BEHAVIOR:
   single-step asks — it's not needed for those.
 - Multi-file create_project calls are enforced: call update_plan before create_project if the
   project will have more than one file, or the call will be blocked.
+
+VERIFY YOUR OWN WORK BEFORE CALLING IT DONE:
+- A successful write_file/edit_file call only means the bytes hit disk — it says nothing about
+  whether the code actually works. Don't report a coding task as finished on that basis alone.
+- After writing or editing code, check it before your final answer: call run_tests (it
+  auto-detects pytest/npm/go test/cargo test/etc. in the project directory) if a test suite
+  exists, or execute_code for a quick standalone script/function check if it doesn't.
+- If a check fails, fix the issue and re-check — don't hand back broken code with an apology
+  instead of a fix, unless you're genuinely stuck after a real attempt, in which case say
+  exactly what's failing and why.
+- If there is truly no way to verify a change (e.g. it depends on external state you don't have
+  access to), say so explicitly in your answer rather than silently skipping verification.
+- If you finish a turn with unverified code changes, you'll be reminded once to check them —
+  treat that as a real requirement, not a formality.
+
+KNOW WHAT YOU'RE EDITING BEFORE YOU EDIT IT:
+- Don't guess at a project's structure, existing function names, or where something is defined.
+  Use search_code (content search) or find_files (filename search) to look before you edit —
+  especially for "fix the bug in X" or "add Y to the existing Z" style requests where you don't
+  already know the exact file/line. list_dir + read_file work for small, known scopes; use
+  search_code when you're looking for where something is defined or used across a project.
 
 BEFORE CREATING A PROJECT OR NEW FILES:
 - If the request is vague (e.g. "create a project", "build me an app", "make a website") and you don't yet know
@@ -273,6 +294,94 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "search_code",
+            "description": (
+                "Search file contents for a regex pattern across a directory tree — like grep. "
+                "Use this to find where something is defined, called, or referenced before "
+                "editing it, instead of guessing. Returns matching file:line:text, grouped by file. "
+                "Skips .git/node_modules/__pycache__/venv/dist/build automatically."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Regex pattern to search for"},
+                    "path": {"type": "string", "description": "Directory (or single file) to search (default '.')"},
+                    "glob": {"type": "string", "description": "Only search filenames matching this glob, e.g. '*.py'"},
+                    "case_sensitive": {"type": "boolean", "description": "Default false"},
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_files",
+            "description": (
+                "Find files by name using a glob pattern (e.g. '*.py', '**/test_*.py', "
+                "'config.*'). Use this when you know roughly what a file is called but not "
+                "where it lives, as opposed to search_code which looks inside file contents."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Glob pattern to match filenames against"},
+                    "path": {"type": "string", "description": "Directory to search under (default '.')"},
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_tests",
+            "description": (
+                "Run the project's test suite and report pass/fail results. Auto-detects the "
+                "test runner (pytest, npm/yarn/pnpm test, go test, cargo test, maven, gradle) "
+                "from files present in the given directory — pass an explicit `command` only if "
+                "detection would guess wrong. Use this after writing or editing code, before "
+                "telling the user a task is done, whenever the project has a test suite."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Project directory to test (default '.')"},
+                    "command": {"type": "string", "description": "Explicit test command, overriding auto-detection"},
+                    "timeout": {"type": "integer", "description": "Seconds before timeout (default 180)"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_code",
+            "description": (
+                "Run a short standalone code snippet and return its stdout/stderr/exit code. "
+                "Use this to sanity-check a function or script you just wrote when there's no "
+                "project test suite to run with run_tests — e.g. to confirm a script actually "
+                "runs without errors and produces the expected output before calling it done."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "description": "The code to run"},
+                    "language": {
+                        "type": "string",
+                        "enum": ["python", "node", "bash", "ruby"],
+                        "description": "Language runtime to use (default python)",
+                    },
+                    "timeout": {"type": "integer", "description": "Seconds before timeout (default 30)"},
+                },
+                "required": ["code"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "update_plan",
             "description": (
                 "Create or update your step-by-step plan for the current task. Call this BEFORE "
@@ -390,6 +499,46 @@ async def _dispatch_tool(name: str, args: dict, conversation_id: str | None = No
             r = await fn()
             return r.report if r.success else f"Error: {r.error}"
 
+        elif name == "search_code":
+            r = codesearch.search_code(
+                pattern=args["pattern"],
+                path=args.get("path", "."),
+                glob=args.get("glob"),
+                case_sensitive=args.get("case_sensitive", False),
+            )
+            return codesearch.format_search_result(r)
+
+        elif name == "find_files":
+            r = codesearch.find_files(pattern=args["pattern"], path=args.get("path", "."))
+            return codesearch.format_find_files_result(r)
+
+        elif name == "run_tests":
+            r = await testing.run_tests(
+                path=args.get("path", "."),
+                command=args.get("command"),
+                timeout=args.get("timeout", 180),
+            )
+            if r.error and not r.command:
+                return f"Error: {r.error}"
+            status = "✅" if r.success else "❌"
+            header = f"{status} {r.framework or 'tests'} ({r.command}): {r.summary}"
+            body = f"\n{r.output_tail}" if r.output_tail else ""
+            return header + body
+
+        elif name == "execute_code":
+            r = await testing.execute_code(
+                code=args["code"],
+                language=args.get("language", "python"),
+                timeout=args.get("timeout", 30),
+            )
+            if r.error and not r.stdout and not r.stderr:
+                return f"Error: {r.error}"
+            status = "✅" if r.success else f"❌ exit {r.returncode}"
+            output = r.stdout or ""
+            if r.stderr:
+                output += f"\n[stderr]\n{r.stderr}"
+            return f"{status}\n{output or '(no output)'}"
+
         elif name == "update_plan":
             raw_items = args.get("items") or []
             cleaned = []
@@ -437,11 +586,42 @@ async def _call_tool(name: str, args: dict, conversation_id: str | None = None) 
 
     result = await _dispatch_tool(name, args, conversation_id=conversation_id)
 
+    if conversation_id:
+        _track_verification_state(name, args, result, conversation_id)
+
     post = hooks.run_post_tool_hooks(name, args, result, conversation_id)
-    if post.note and conversation_id:
-        memory.log_event(conversation_id, "tool_flagged", {"tool": name, "note": post.note}, model=None)
+    if post.note:
+        # Surface the flag to the model too, not just the execution log —
+        # a note nobody reads doesn't change behavior.
+        result = f"{result}\n\n⚠️ {post.note}"
+        if conversation_id:
+            memory.log_event(conversation_id, "tool_flagged", {"tool": name, "note": post.note}, model=None)
 
     return result
+
+
+_TOOL_FAILURE_MARKERS = ("error:", "❌", "⛔")
+
+
+def _track_verification_state(name: str, args: dict, result: str, conversation_id: str) -> None:
+    """Keep verification_state in sync with what just happened, so the
+    run_task loop can tell whether unverified code changes are outstanding
+    when the model is about to give its final answer."""
+    low = (result or "").lower()
+    failed = any(marker in low for marker in _TOOL_FAILURE_MARKERS)
+
+    if name in ("write_file", "edit_file") and not failed:
+        path = args.get("path", "")
+        if testing.is_code_file(path):
+            memory.mark_dirty(conversation_id, path)
+
+    elif name == "create_project" and not failed:
+        for fname in (args.get("files_dict") or {}):
+            if testing.is_code_file(fname):
+                memory.mark_dirty(conversation_id, f"{args.get('name', 'project')}/{fname}")
+
+    elif name in ("run_tests", "execute_code"):
+        memory.mark_verified(conversation_id, {"tool": name, "success": not failed})
 
 
 # ─────────────────────────────────────────────────────────────
@@ -736,7 +916,7 @@ async def run_task(
         attempt_text = ""
         attempt_failed = False
 
-        for iteration in range(8):
+        for iteration in range(10):
             text, tool_calls = await _llm_call_with_tools(
                 provider=provider,
                 model_id=model["id"],
@@ -751,6 +931,24 @@ async def run_task(
                 break
 
             if not tool_calls:
+                if conversation_id and iteration < 9:
+                    vstate = memory.get_verification_state(conversation_id)
+                    if vstate["dirty"] and not vstate["nudged"]:
+                        memory.set_nudged(conversation_id)
+                        _log({"verification_nudge": True, "dirty_files": vstate["dirty_files"]})
+                        attempt_messages.append({"role": "assistant", "content": text or ""})
+                        changed = ", ".join(vstate["dirty_files"][:5]) or "the file(s) you changed"
+                        attempt_messages.append({
+                            "role": "user",
+                            "content": (
+                                f"Before you finish: you changed {changed} but haven't verified "
+                                "it/them yet. Run run_tests (or execute_code if there's no test "
+                                "suite), fix anything that fails, then give your real final "
+                                "answer. If there's genuinely no way to verify this, say so "
+                                "explicitly instead of skipping it."
+                            ),
+                        })
+                        continue
                 attempt_text = text
                 break
 
@@ -783,10 +981,12 @@ async def run_task(
             for tc in tool_calls:
                 logger.info(f"Tool call: {tc['name']}({tc['args']})")
                 result = await _call_tool(tc["name"], tc["args"], conversation_id=conversation_id)
+                tool_success = not any(m in result.lower() for m in _TOOL_FAILURE_MARKERS)
                 attempt_tool_calls.append({
                     "tool": tc["name"],
                     "args": tc["args"],
                     "result": result[:500],
+                    "success": tool_success,
                 })
                 _log({
                     "tool": tc["name"],

@@ -25,6 +25,8 @@ asrar/
 │   │   ├── web.py                  ← Search & browse (Phase 2)
 │   │   ├── files.py                ← Read/write docs (Phase 2)
 │   │   ├── shell.py                ← Run commands (Phase 2)
+│   │   ├── testing.py              ← Run test suites / snippets to verify edits (v0.8) ✅
+│   │   ├── codesearch.py           ← Grep/glob the project before editing (v0.9) ✅
 │   │   └── diagnosis.py            ← PC fault detection (Phase 2)
 │   │
 │   ├── providers/

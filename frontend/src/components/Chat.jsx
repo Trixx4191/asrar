@@ -3,11 +3,20 @@ import ModelBadge from "./ModelBadge";
 
 const API = "http://127.0.0.1:8000";
 
-function ToolCall({ name, args, result }) {
+function ToolCall({ name, args, result, success }) {
   const [open, setOpen] = useState(false);
   const argStr = Object.entries(args || {})
     .map(([k, v]) => `${k}=${JSON.stringify(v).slice(0, 60)}`)
     .join(", ");
+
+  let statusNode;
+  if (result === undefined || result === "") {
+    statusNode = <span className="tool-call-status running">⟳</span>;
+  } else if (success === false) {
+    statusNode = <span className="tool-call-status failed">✗</span>;
+  } else {
+    statusNode = <span className="tool-call-status done">✓</span>;
+  }
 
   return (
     <div className="tool-call-block">
@@ -15,9 +24,7 @@ function ToolCall({ name, args, result }) {
         <span className="tool-call-icon">⚙</span>
         <span className="tool-call-name">{name}</span>
         {argStr && <span className="tool-call-args">({argStr})</span>}
-        {result
-          ? <span className="tool-call-status done">✓</span>
-          : <span className="tool-call-status running">⟳</span>}
+        {statusNode}
         <span className="tool-call-toggle">{open ? "▲" : "▼"}</span>
       </div>
       {open && result && (
@@ -68,8 +75,17 @@ function Message({ msg }) {
       {msg.toolCalls?.length > 0 && (
         <div className="tool-calls-list">
           {msg.toolCalls.map((tc, i) => (
-            <ToolCall key={i} name={tc.name} args={tc.args} result={tc.result} />
+            <ToolCall key={i} name={tc.name} args={tc.args} result={tc.result} success={tc.success} />
           ))}
+        </div>
+      )}
+
+      {msg.nudging && (
+        <div className="nudge-banner">
+          <span className="nudge-icon">⟳</span>
+          <span>
+            Double-checking {msg.nudgeFiles?.length ? msg.nudgeFiles.join(", ") : "the changes"} before finishing…
+          </span>
         </div>
       )}
 
@@ -112,6 +128,7 @@ function normalizeToolCalls(raw) {
     name: tc.name || tc.tool,
     args: tc.args || {},
     result: tc.result || "",
+    success: tc.success,
   }));
 }
 
@@ -270,12 +287,13 @@ export default function Chat({ forceModel, models = [], onForceModelChange }) {
 
           } else if (chunk.token) {
             // Streaming text token
-            updateAssistant(m => ({ ...m, content: m.content + chunk.token }));
+            updateAssistant(m => ({ ...m, content: m.content + chunk.token, nudging: false }));
 
           } else if (chunk.tool_start) {
             // Tool is starting — add it to toolCalls as pending
             updateAssistant(m => ({
               ...m,
+              nudging: false,
               toolCalls: [...(m.toolCalls || []), {
                 name: chunk.tool_start,
                 args: chunk.args || {},
@@ -296,19 +314,25 @@ export default function Chat({ forceModel, models = [], onForceModelChange }) {
               // Find the last entry with this tool name that has no result yet
               const idx = calls.map((c, i) => c.name === chunk.tool_result && !c.result ? i : -1)
                              .filter(i => i >= 0).pop();
-              if (idx !== undefined) calls[idx] = { ...calls[idx], result: chunk.preview };
+              if (idx !== undefined) calls[idx] = { ...calls[idx], result: chunk.preview, success: chunk.success };
               return { ...m, toolCalls: calls };
             });
 
+          } else if (chunk.nudge) {
+            // Agent finished a reply but left code unverified — it's about
+            // to loop back and check its work before really answering.
+            updateAssistant(m => ({ ...m, nudging: true, nudgeFiles: chunk.files || [] }));
+
           } else if (chunk.done) {
             // Stream complete
-            updateAssistant(m => ({ ...m, streaming: false }));
+            updateAssistant(m => ({ ...m, streaming: false, nudging: false }));
 
           } else if (chunk.error) {
             updateAssistant(m => ({
               ...m,
               content: m.content + `\n\n⚠️ Error: ${chunk.error}`,
               streaming: false,
+              nudging: false,
             }));
           }
         }

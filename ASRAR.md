@@ -38,6 +38,8 @@ and falls back gracefully if anything fails.
 | 🌐 Web Research    | Browse, search, and summarize the web                    | 🔜 Soon |
 | 📄 Document Work   | Read, write, edit .docx, .pdf, .txt, .md files          | 🔜 Soon |
 | 💻 PC Automation   | Run shell commands, move files, launch apps              | 🔜 Soon |
+| ✅ Self-Verification | Runs tests / executes code to check its own edits before calling a task done | ✅ Live  |
+| 🔎 Codebase Awareness | Greps/globs a project before editing instead of guessing at structure | ✅ Live  |
 | 🔧 PC Diagnosis    | Read logs, detect crashes, suggest and apply fixes       | 🔜 Soon |
 | ➕ Model Registry  | Add new models by name or URL — agent self-registers     | ✅ Live  |
 
@@ -152,6 +154,8 @@ asrar/
 | 0.5.0   | 2026-06-18 | Hooks system (core/hooks.py), modeled on Claude Code's PreToolUse/PostToolUse: multi-file create_project is now blocked until a plan exists for the conversation; destructive shell commands are gated on explicit confirmation; tool failures are flagged into execution_log via PostToolUse review instead of being silently trusted |
 | 0.6.0   | 2026-06-18 | edit_file tool: precise old_string/new_string replacement for existing files (Claude Code's Edit tool equivalent), so the agent doesn't have to rewrite an entire file just to change one part of it. Rejects ambiguous matches, no-ops, and missing files with actionable error messages |
 | 0.7.0   | 2026-06-18 | Full UI redesign — brutalist glass: frosted backdrop-blur panels with hard offset shadows, Space Grotesk for display text, ember-drift ambient background. Fixed model-selection bug where Settings' "Auto-select model" toggle silently overrode the chat dropdown's explicit choice — removed the redundant toggle, the dropdown is now the single source of truth |
+| 0.8.0   | 2026-07-16 | Verify loop (core/tools/testing.py): run_tests auto-detects and runs the project's test suite (pytest/npm/go/cargo/maven/gradle), execute_code sanity-checks a standalone snippet when there's no suite. A successful write_file/edit_file/create_project on a code file now marks the conversation's verification state dirty (core/memory.py); if the agent tries to give a final answer with unverified code changes outstanding, it gets nudged once to check its work before the answer is accepted, instead of a successful disk write being silently treated as "done". Also fixed PostToolUse hook notes being logged but never actually shown to the model — they're now appended to the tool result so a flagged failure changes what the model sees, not just what's in the audit log. |
+| 0.9.0   | 2026-07-16 | Codebase awareness + live activity feed. New search_code (grep-style regex content search) and find_files (glob filename search) tools — Claude Code's Grep/Glob equivalents — so the agent looks at what's actually there before editing instead of guessing. Ported the v0.8 verify-nudge loop into the SSE /chat/stream route, which had its own separate agent loop that never got it — streaming chat now gets the same "check your work before you're done" enforcement as non-streaming /chat, not a weaker copy of it. tool_result events (and stored tool_calls history) now carry a success flag instead of the UI always showing a checkmark regardless of whether the tool actually failed; the UI shows a ✗ in red for failed calls. Added a "nudge" SSE event and a matching UI banner so a verification round-trip is visible ("Double-checking app.py before finishing…") instead of looking like the agent stalled. |
 
 ---
 

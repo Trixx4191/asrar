@@ -118,6 +118,22 @@ def init_db() -> None:
             )
         """)
 
+        # Verification state — tracks whether code files were changed since
+        # the last run_tests/execute_code call, so the agent loop can nudge
+        # the model to verify its own work before declaring a turn done
+        # instead of trusting that a successful write_file/edit_file means
+        # the code actually works.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS verification_state (
+                conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+                dirty           INTEGER NOT NULL DEFAULT 0,
+                dirty_files     TEXT,
+                last_result     TEXT,
+                nudged          INTEGER NOT NULL DEFAULT 0,
+                updated_at      TEXT NOT NULL
+            )
+        """)
+
 
 def _now() -> str:
     return datetime.now().isoformat()
@@ -343,6 +359,96 @@ def get_plan(conversation_id: str) -> list[dict]:
         return json.loads(row["items"])
     except (json.JSONDecodeError, TypeError):
         return []
+
+
+# ─────────────────────────────────────────────────────────────
+# Verification state — has code changed since the last test run?
+# Lets the agent loop enforce "verify before you say you're done"
+# instead of just hoping the model remembers to check its work.
+# ─────────────────────────────────────────────────────────────
+
+def mark_dirty(conversation_id: str, file_path: str) -> None:
+    """Record that a code file was written/edited and hasn't been verified
+    since. Resets `nudged` so a fresh change earns a fresh chance to prompt
+    the model to check it, even within the same turn."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT dirty_files FROM verification_state WHERE conversation_id = ?",
+            (conversation_id,),
+        ).fetchone()
+        files: list[str] = []
+        if row and row["dirty_files"]:
+            try:
+                files = json.loads(row["dirty_files"])
+            except (json.JSONDecodeError, TypeError):
+                files = []
+        if file_path not in files:
+            files.append(file_path)
+        c.execute(
+            """INSERT INTO verification_state
+                   (conversation_id, dirty, dirty_files, nudged, updated_at)
+               VALUES (?, 1, ?, 0, ?)
+               ON CONFLICT(conversation_id) DO UPDATE SET
+                   dirty       = 1,
+                   dirty_files = excluded.dirty_files,
+                   nudged      = 0,
+                   updated_at  = excluded.updated_at""",
+            (conversation_id, json.dumps(files), _now()),
+        )
+
+
+def mark_verified(conversation_id: str, result: dict | None = None) -> None:
+    """Clear the dirty flag after a run_tests/execute_code call, regardless
+    of whether that check passed — the point is that verification happened,
+    not that it succeeded (a failed check should surface in the response,
+    not loop forever)."""
+    with _conn() as c:
+        c.execute(
+            """INSERT INTO verification_state
+                   (conversation_id, dirty, dirty_files, last_result, nudged, updated_at)
+               VALUES (?, 0, '[]', ?, 0, ?)
+               ON CONFLICT(conversation_id) DO UPDATE SET
+                   dirty       = 0,
+                   dirty_files = '[]',
+                   last_result = excluded.last_result,
+                   nudged      = 0,
+                   updated_at  = excluded.updated_at""",
+            (conversation_id, json.dumps(result) if result else None, _now()),
+        )
+
+
+def set_nudged(conversation_id: str) -> None:
+    with _conn() as c:
+        c.execute(
+            """INSERT INTO verification_state (conversation_id, dirty, nudged, updated_at)
+               VALUES (?, 1, 1, ?)
+               ON CONFLICT(conversation_id) DO UPDATE SET
+                   nudged     = 1,
+                   updated_at = excluded.updated_at""",
+            (conversation_id, _now()),
+        )
+
+
+def get_verification_state(conversation_id: str) -> dict:
+    with _conn() as c:
+        row = c.execute(
+            "SELECT * FROM verification_state WHERE conversation_id = ?",
+            (conversation_id,),
+        ).fetchone()
+    if not row:
+        return {"dirty": False, "dirty_files": [], "last_result": None, "nudged": False}
+    d = dict(row)
+    d["dirty"] = bool(d["dirty"])
+    d["nudged"] = bool(d["nudged"])
+    try:
+        d["dirty_files"] = json.loads(d["dirty_files"]) if d["dirty_files"] else []
+    except (json.JSONDecodeError, TypeError):
+        d["dirty_files"] = []
+    try:
+        d["last_result"] = json.loads(d["last_result"]) if d["last_result"] else None
+    except (json.JSONDecodeError, TypeError):
+        d["last_result"] = None
+    return d
 
 
 # Initialize on import so every module that touches memory gets the schema.
