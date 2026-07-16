@@ -7,7 +7,8 @@ Stream event format (matches what Chat.jsx already expects):
   data: {"meta": true, "model": "...", "task_type": "...", "reason": "..."}
   data: {"token": "..."}
   data: {"tool_start": "tool_name", "args": {...}}
-  data: {"tool_result": "tool_name", "preview": "..."}
+  data: {"tool_result": "tool_name", "preview": "...", "success": true}
+  data: {"nudge": true, "files": [...]}   — agent is verifying unchecked code changes
   data: {"done": true, "tool_calls": [...]} 
   data: {"error": "..."}
 """
@@ -216,7 +217,7 @@ async def chat_stream(req: ChatRequest):
         # (messages already includes the user turn)
 
         all_tool_calls: list[dict] = []
-        MAX_ITER = 8
+        MAX_ITER = 10
 
         for iteration in range(MAX_ITER):
             # ── Build provider-specific streaming request ─────────────
@@ -291,6 +292,24 @@ async def chat_stream(req: ChatRequest):
                 yield f"data: {json.dumps({'token': tok})}\n\n"
 
             if not tool_calls:
+                if iteration < MAX_ITER - 1:
+                    vstate = memory.get_verification_state(conversation_id)
+                    if vstate["dirty"] and not vstate["nudged"]:
+                        memory.set_nudged(conversation_id)
+                        changed = ", ".join(vstate["dirty_files"][:5]) or "the file(s) you changed"
+                        yield f"data: {json.dumps({'nudge': True, 'files': vstate['dirty_files'][:5]})}\n\n"
+                        messages.append({"role": "assistant", "content": text or ""})
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                f"Before you finish: you changed {changed} but haven't verified "
+                                "it/them yet. Run run_tests (or execute_code if there's no test "
+                                "suite), fix anything that fails, then give your real final "
+                                "answer. If there's genuinely no way to verify this, say so "
+                                "explicitly instead of skipping it."
+                            ),
+                        })
+                        continue
                 break
 
             # ── Execute tool calls ────────────────────────────────────
@@ -316,9 +335,10 @@ async def chat_stream(req: ChatRequest):
                 yield f"data: {json.dumps({'tool_start': tc['name'], 'args': tc['args']})}\n\n"
 
                 result = await _call_tool(tc["name"], tc["args"], conversation_id=conversation_id)
-                all_tool_calls.append({"tool": tc["name"], "args": tc["args"], "result": result[:500]})
+                tool_success = not any(m in result.lower() for m in ("error:", "❌", "⛔"))
+                all_tool_calls.append({"tool": tc["name"], "args": tc["args"], "result": result[:500], "success": tool_success})
 
-                yield f"data: {json.dumps({'tool_result': tc['name'], 'preview': result[:300]})}\n\n"
+                yield f"data: {json.dumps({'tool_result': tc['name'], 'preview': result[:300], 'success': tool_success})}\n\n"
 
                 if provider_name == "anthropic":
                     messages.append({
