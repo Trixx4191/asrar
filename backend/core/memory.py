@@ -134,6 +134,24 @@ def init_db() -> None:
             )
         """)
 
+        # Pending actions — human-gated approval for destructive commands.
+        # A PreToolUse block on run_command creates a row here instead of
+        # trusting the model's self-reported confirmed=true flag. Only a
+        # real /chat/approve call tied to this exact id executes the exact
+        # stored command — the model can't manufacture approval on its own.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS pending_actions (
+                id              TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                tool            TEXT NOT NULL,
+                args            TEXT NOT NULL,
+                reason          TEXT,
+                status          TEXT NOT NULL DEFAULT 'pending',
+                created_at      TEXT NOT NULL,
+                resolved_at     TEXT
+            )
+        """)
+
 
 def _now() -> str:
     return datetime.now().isoformat()
@@ -449,6 +467,77 @@ def get_verification_state(conversation_id: str) -> dict:
     except (json.JSONDecodeError, TypeError):
         d["last_result"] = None
     return d
+
+
+# ─────────────────────────────────────────────────────────────
+# Pending actions — human-gated approval, decoupled from the model's
+# self-reported confirmed=true. See pending_actions table comment above.
+# ─────────────────────────────────────────────────────────────
+
+def create_pending_action(conversation_id: str, tool: str, args: dict, reason: str = "") -> str:
+    action_id = uuid.uuid4().hex[:12]
+    with _conn() as c:
+        c.execute(
+            """INSERT INTO pending_actions
+                   (id, conversation_id, tool, args, reason, status, created_at)
+               VALUES (?, ?, ?, ?, ?, 'pending', ?)""",
+            (action_id, conversation_id, tool, json.dumps(args), reason, _now()),
+        )
+    return action_id
+
+
+def get_pending_action(action_id: str) -> dict | None:
+    with _conn() as c:
+        row = c.execute("SELECT * FROM pending_actions WHERE id = ?", (action_id,)).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    try:
+        d["args"] = json.loads(d["args"]) if d["args"] else {}
+    except (json.JSONDecodeError, TypeError):
+        d["args"] = {}
+    return d
+
+
+def get_latest_pending_action(conversation_id: str, tool: str | None = None) -> dict | None:
+    """Most recent still-pending action for a conversation — used to attach
+    a structured approval_required event to a hook block that already
+    happened, without changing _call_tool's return type."""
+    with _conn() as c:
+        if tool:
+            row = c.execute(
+                """SELECT * FROM pending_actions
+                   WHERE conversation_id = ? AND tool = ? AND status = 'pending'
+                   ORDER BY created_at DESC LIMIT 1""",
+                (conversation_id, tool),
+            ).fetchone()
+        else:
+            row = c.execute(
+                """SELECT * FROM pending_actions
+                   WHERE conversation_id = ? AND status = 'pending'
+                   ORDER BY created_at DESC LIMIT 1""",
+                (conversation_id,),
+            ).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    try:
+        d["args"] = json.loads(d["args"]) if d["args"] else {}
+    except (json.JSONDecodeError, TypeError):
+        d["args"] = {}
+    return d
+
+
+def resolve_pending_action(action_id: str, status: str) -> bool:
+    """status: 'approved' or 'denied'. Returns False if the action didn't
+    exist or was already resolved (so a double-click can't run something twice)."""
+    with _conn() as c:
+        cur = c.execute(
+            """UPDATE pending_actions SET status = ?, resolved_at = ?
+               WHERE id = ? AND status = 'pending'""",
+            (status, _now(), action_id),
+        )
+        return cur.rowcount > 0
 
 
 # Initialize on import so every module that touches memory gets the schema.

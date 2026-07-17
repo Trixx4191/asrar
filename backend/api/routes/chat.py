@@ -8,6 +8,8 @@ Stream event format (matches what Chat.jsx already expects):
   data: {"token": "..."}
   data: {"tool_start": "tool_name", "args": {...}}
   data: {"tool_result": "tool_name", "preview": "...", "success": true}
+  data: {"diff": true, "path": "...", "unified_diff": "..."}  — after write_file/edit_file on an existing file
+  data: {"approval_required": true, "action_id": "...", "command": "...", "reason": "..."}
   data: {"nudge": true, "files": [...]}   — agent is verifying unchecked code changes
   data: {"done": true, "tool_calls": [...]} 
   data: {"error": "..."}
@@ -23,12 +25,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from core.agent import run_task, _call_tool, SYSTEM_PROMPT, TOOL_SCHEMAS
+from core.agent import run_task, _call_tool, SYSTEM_PROMPT, TOOL_SCHEMAS, get_last_diff
 from core.agent import _to_anthropic_tools, _to_google_tools
 from core.router import route
 from core import memory, supervisor
 from providers import get_provider
 from providers.base import Message
+from tools import shell
 
 router = APIRouter()
 
@@ -76,6 +79,57 @@ async def chat(req: ChatRequest):
     )
 
     return ChatResponse(**result, conversation_id=conversation_id)
+
+
+class ApprovalRequest(BaseModel):
+    conversation_id: str
+    action_id: str
+    approved: bool
+
+
+class ApprovalResponse(BaseModel):
+    status: str  # "approved" | "denied" | "already_resolved" | "not_found"
+    output: str | None = None
+
+
+@router.post("/approve", response_model=ApprovalResponse)
+async def approve_action(req: ApprovalRequest):
+    """Resolve a pending destructive-command approval created by
+    hooks._gate_destructive_commands. This runs the EXACT command stored at
+    block time — the model never sees or sets 'approved', so it can't
+    manufacture consent for a different command than the one shown to the
+    user. This is the human-gated counterpart to the model self-reporting
+    confirmed=true; both paths still work, but this one doesn't require
+    trusting the model to relay approval honestly."""
+    pending = memory.get_pending_action(req.action_id)
+    if not pending or pending["conversation_id"] != req.conversation_id:
+        return ApprovalResponse(status="not_found")
+
+    if pending["status"] != "pending":
+        return ApprovalResponse(status="already_resolved")
+
+    if not req.approved:
+        memory.resolve_pending_action(req.action_id, "denied")
+        command = pending["args"].get("command", "")
+        note = f"❌ Command was not approved:\n```bash\n{command}\n```"
+        memory.add_message(req.conversation_id, "assistant", note)
+        return ApprovalResponse(status="denied", output=note)
+
+    resolved = memory.resolve_pending_action(req.action_id, "approved")
+    if not resolved:
+        # Lost a race with another approve/deny call on the same action.
+        return ApprovalResponse(status="already_resolved")
+
+    command = pending["args"].get("command", "")
+    timeout = pending["args"].get("timeout", 30)
+    result = await shell.run(command, timeout=timeout, override=True)
+
+    output = result.stdout or result.stderr or "(no output)"
+    status_line = "✅" if result.success else f"❌ exit {result.returncode}"
+    note = f"✅ Approved and ran:\n```bash\n{command}\n```\n{status_line}\n{output}"
+    memory.add_message(req.conversation_id, "assistant", note)
+
+    return ApprovalResponse(status="approved", output=note)
 
 
 @router.post("/stream")
@@ -339,6 +393,15 @@ async def chat_stream(req: ChatRequest):
                 all_tool_calls.append({"tool": tc["name"], "args": tc["args"], "result": result[:500], "success": tool_success})
 
                 yield f"data: {json.dumps({'tool_result': tc['name'], 'preview': result[:300], 'success': tool_success})}\n\n"
+
+                if tc["name"] == "run_command" and result.startswith("⛔"):
+                    pending = memory.get_latest_pending_action(conversation_id, tool="run_command")
+                    if pending:
+                        yield f"data: {json.dumps({'approval_required': True, 'action_id': pending['id'], 'command': pending['args'].get('command', ''), 'reason': pending.get('reason', '')})}\n\n"
+
+                last_diff = get_last_diff()
+                if last_diff:
+                    yield f"data: {json.dumps({'diff': True, 'path': last_diff['path'], 'unified_diff': last_diff['diff']})}\n\n"
 
                 if provider_name == "anthropic":
                     messages.append({

@@ -1100,6 +1100,64 @@ input, textarea {
 }
 .nudge-banner .nudge-icon { animation: spin 1.2s linear infinite; color: var(--accent); }
 
+/* Diff review — unified diff rendering for write_file/edit_file on existing files */
+.diffs-list { display: flex; flex-direction: column; gap: 6px; margin: 6px 0; }
+.diff-block {
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.diff-block-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  user-select: none;
+  background: rgba(0,0,0,0.15);
+}
+.diff-block-header:hover { background: var(--bg-hover); }
+.diff-block-icon { color: var(--accent); }
+.diff-block-path { color: var(--text-primary); font-weight: 500; flex: 1; }
+.diff-block-toggle { color: var(--text-muted); }
+.diff-block-body {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-x: auto;
+  background: rgba(0,0,0,0.3);
+  max-height: 320px;
+  overflow-y: auto;
+}
+.diff-block-body .diff-add  { color: var(--green); background: rgba(89, 217, 142, 0.08); }
+.diff-block-body .diff-del  { color: var(--red);   background: rgba(226, 96, 79, 0.08); }
+.diff-block-body .diff-hunk { color: var(--accent); }
+.diff-block-body .diff-ctx  { color: var(--text-muted); }
+
+/* Human-gated approval — real Approve/Deny, not just chat text */
+.approval-banner {
+  margin: 8px 16px;
+  padding: 12px 14px;
+  border: 2px solid var(--red);
+  border-radius: 4px;
+  background: rgba(226, 96, 79, 0.06);
+}
+.approval-banner-text { color: var(--text-primary); font-size: 13px; margin-bottom: 6px; }
+.approval-banner-command {
+  margin: 0 0 10px 0;
+  padding: 8px 10px;
+  background: rgba(0,0,0,0.35);
+  border-radius: 3px;
+  font-size: 12px;
+  overflow-x: auto;
+}
+.approval-banner-actions { display: flex; gap: 8px; }
+.approval-approve { border-color: var(--green) !important; }
+.approval-approve:hover { box-shadow: 4px 4px 0 0 var(--green) !important; }
+.approval-deny { border-color: var(--red) !important; }
+.approval-deny:hover { box-shadow: 4px 4px 0 0 var(--red) !important; }
+
 .tool-call-toggle { color: var(--text-muted); margin-left: auto; flex-shrink: 0; }
 
 .tool-call-result {

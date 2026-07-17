@@ -80,6 +80,14 @@ function Message({ msg }) {
         </div>
       )}
 
+      {msg.diffs?.length > 0 && (
+        <div className="diffs-list">
+          {msg.diffs.map((d, i) => (
+            <DiffBlock key={i} path={d.path} diff={d.diff} />
+          ))}
+        </div>
+      )}
+
       {msg.nudging && (
         <div className="nudge-banner">
           <span className="nudge-icon">⟳</span>
@@ -121,6 +129,52 @@ function relativeLabel(iso) {
   return `${Math.floor(hrs / 24)}d`;
 }
 
+function DiffBlock({ path, diff }) {
+  const [open, setOpen] = useState(true);
+  const lines = (diff || "").split("\n");
+
+  return (
+    <div className="diff-block">
+      <div className="diff-block-header" onClick={() => setOpen(o => !o)}>
+        <span className="diff-block-icon">±</span>
+        <span className="diff-block-path">{path}</span>
+        <span className="diff-block-toggle">{open ? "▲" : "▼"}</span>
+      </div>
+      {open && (
+        <pre className="diff-block-body">
+          {lines.map((line, i) => {
+            let cls = "diff-ctx";
+            if (line.startsWith("+") && !line.startsWith("+++")) cls = "diff-add";
+            else if (line.startsWith("-") && !line.startsWith("---")) cls = "diff-del";
+            else if (line.startsWith("@@")) cls = "diff-hunk";
+            return <div key={i} className={cls}>{line || " "}</div>;
+          })}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+function ApprovalBanner({ pending, onDecide }) {
+  if (!pending) return null;
+  return (
+    <div className="approval-banner">
+      <div className="approval-banner-text">
+        <strong>Approval needed</strong> — this command modifies the system:
+      </div>
+      <pre className="approval-banner-command">{pending.command}</pre>
+      <div className="approval-banner-actions">
+        <button className="btn-brutal approval-approve" onClick={() => onDecide(true)}>
+          Approve &amp; run
+        </button>
+        <button className="btn-brutal approval-deny" onClick={() => onDecide(false)}>
+          Deny
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // Normalize a tool_calls entry from the DB (key "tool") into the shape
 // the Message/ToolCall components expect (key "name").
 function normalizeToolCalls(raw) {
@@ -139,6 +193,7 @@ export default function Chat({ forceModel, models = [], onForceModelChange }) {
   const [conversations, setConversations] = useState([]);
   const [conversationId, setConversationId] = useState(null);
   const [plan, setPlan]           = useState([]); // current step-by-step plan (update_plan tool)
+  const [pendingApproval, setPendingApproval] = useState(null); // {action_id, command, reason}
   const bottomRef     = useRef(null);
   const abortRef      = useRef(null);
   const assistantRef  = useRef(null); // tracks the index of the current streaming message
@@ -214,6 +269,8 @@ export default function Chat({ forceModel, models = [], onForceModelChange }) {
   async function send() {
     const text = input.trim();
     if (!text || loading) return;
+
+    setPendingApproval(null);
 
     const userMsg = { role: "user", content: text, time: now() };
 
@@ -318,6 +375,23 @@ export default function Chat({ forceModel, models = [], onForceModelChange }) {
               return { ...m, toolCalls: calls };
             });
 
+          } else if (chunk.diff) {
+            // A write_file/edit_file call changed an existing file — show
+            // exactly what changed, not just that the tool "succeeded".
+            updateAssistant(m => ({
+              ...m,
+              diffs: [...(m.diffs || []), { path: chunk.path, diff: chunk.unified_diff }],
+            }));
+
+          } else if (chunk.approval_required) {
+            // A destructive command is blocked pending real human approval —
+            // not the model's self-reported confirmed=true. Show real buttons.
+            setPendingApproval({
+              action_id: chunk.action_id,
+              command: chunk.command,
+              reason: chunk.reason,
+            });
+
           } else if (chunk.nudge) {
             // Agent finished a reply but left code unverified — it's about
             // to loop back and check its work before really answering.
@@ -352,6 +426,34 @@ export default function Chat({ forceModel, models = [], onForceModelChange }) {
     } finally {
       setLoading(false);
       abortRef.current = null;
+    }
+  }
+
+  async function handleApprovalDecision(approved) {
+    const action = pendingApproval;
+    if (!action) return;
+    setPendingApproval(null);
+
+    try {
+      const res = await fetch(`${API}/chat/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversation_id: conversationIdRef.current,
+          action_id: action.action_id,
+          approved,
+        }),
+      });
+      const data = await res.json();
+      const text = data.output || (approved ? "Approved." : "Denied.");
+      setMessages(prev => [...prev, { role: "assistant", content: text, time: now(), toolCalls: [] }]);
+    } catch (e) {
+      setMessages(prev => [...prev, {
+        role: "assistant",
+        content: `Connection error while resolving approval: ${e.message}`,
+        time: now(),
+        toolCalls: [],
+      }]);
     }
   }
 
@@ -417,6 +519,8 @@ export default function Chat({ forceModel, models = [], onForceModelChange }) {
           )}
           <div ref={bottomRef} />
         </div>
+
+        <ApprovalBanner pending={pendingApproval} onDecide={handleApprovalDecision} />
 
         <div className="chat-input-area">
           <div className="chat-input-row">

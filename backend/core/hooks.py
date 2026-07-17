@@ -38,6 +38,7 @@ class HookResult:
     blocked: bool = False
     reason: str = ""   # why a PreToolUse hook blocked the call
     note: str = ""      # feedback a PostToolUse hook wants appended to the result
+    action_id: str = ""  # set when a block created a pending_actions row for human approval
 
 
 # ─────────────────────────────────────────────────────────────
@@ -85,7 +86,12 @@ _CONFIRM_COMMAND_PATTERNS = [
 def _gate_destructive_commands(name: str, args: dict, conversation_id: str | None) -> HookResult:
     """Shell commands that modify system state need explicit user
     confirmation first — the same permission gate Claude Code applies to
-    risky bash commands before running them."""
+    risky bash commands before running them.
+
+    Blocking here also files a pending_actions row (when we have a
+    conversation to attach it to) so the UI can offer a real Approve/Deny
+    action tied to this exact command, instead of the only path to
+    'confirmed' being the model's own self-report after a chat exchange."""
     if name != "run_command":
         return HookResult()
     if args.get("confirmed"):
@@ -93,8 +99,17 @@ def _gate_destructive_commands(name: str, args: dict, conversation_id: str | Non
 
     command = (args.get("command") or "")
     if any(p in command.lower() for p in _CONFIRM_COMMAND_PATTERNS):
+        action_id = ""
+        if conversation_id:
+            action_id = memory.create_pending_action(
+                conversation_id,
+                "run_command",
+                {"command": command, "timeout": args.get("timeout", 30)},
+                reason="Needs explicit user approval before running.",
+            )
         return HookResult(
             blocked=True,
+            action_id=action_id,
             reason=(
                 f"This command needs the user's explicit approval before running:\n\n"
                 f"```bash\n{command}\n```\n\n"
