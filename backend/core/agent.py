@@ -23,6 +23,7 @@ import os
 import asyncio
 import json
 import logging
+import contextvars
 from pathlib import Path
 from datetime import datetime
 
@@ -421,6 +422,22 @@ TOOL_SCHEMAS: list[dict] = [
 # Tool executor  (clean dispatch — no regex)
 # ─────────────────────────────────────────────────────────────
 
+# Set by write_file/edit_file when they touch an existing file, so a diff
+# can be surfaced to the UI as a structured event without threading a second
+# return value through every _dispatch_tool branch and both call sites.
+_last_diff_var: contextvars.ContextVar[dict | None] = contextvars.ContextVar("_last_diff", default=None)
+
+
+def get_last_diff() -> dict | None:
+    """Consume the diff produced by the most recent write_file/edit_file
+    call in this request, if any. Returns {'path': ..., 'diff': ...} or None.
+    One-shot — calling this clears it, so a stale diff can't leak into the
+    next tool call's event."""
+    d = _last_diff_var.get()
+    _last_diff_var.set(None)
+    return d
+
+
 async def _dispatch_tool(name: str, args: dict, conversation_id: str | None = None) -> str:
     """The actual tool implementations. Called by _call_tool() only after
     PreToolUse hooks have approved the call — assume by this point the
@@ -436,7 +453,12 @@ async def _dispatch_tool(name: str, args: dict, conversation_id: str | None = No
                 args["content"],
                 overwrite=args.get("overwrite", False),
             )
-            return r.content if r.success else f"Error: {r.error}"
+            if not r.success:
+                return f"Error: {r.error}"
+            if r.diff:
+                _last_diff_var.set({"path": args["path"], "diff": r.diff})
+                return f"{r.content}\n\n--- diff ---\n{r.diff[:3000]}"
+            return r.content
 
         elif name == "edit_file":
             r = files.edit_file(
@@ -445,7 +467,12 @@ async def _dispatch_tool(name: str, args: dict, conversation_id: str | None = No
                 args["new_string"],
                 replace_all=args.get("replace_all", False),
             )
-            return r.content if r.success else f"Error: {r.error}"
+            if not r.success:
+                return f"Error: {r.error}"
+            if r.diff:
+                _last_diff_var.set({"path": args["path"], "diff": r.diff})
+                return f"{r.content}\n\n--- diff ---\n{r.diff[:3000]}"
+            return r.content
 
         elif name == "create_project":
             r = files.create_project(
@@ -584,6 +611,7 @@ async def _call_tool(name: str, args: dict, conversation_id: str | None = None) 
             memory.log_event(conversation_id, "tool_blocked", {"tool": name, "reason": pre.reason}, model=None)
         return f"⛔ {pre.reason}"
 
+    _last_diff_var.set(None)
     result = await _dispatch_tool(name, args, conversation_id=conversation_id)
 
     if conversation_id:
