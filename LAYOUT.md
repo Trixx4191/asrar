@@ -19,6 +19,7 @@ asrar/
 │   │   ├── router.py               ← Model selection ✅
 │   │   ├── registry.py             ← Add/remove models ✅
 │   │   ├── agent.py                ← Main agent loop (Phase 2)
+│   │   ├── orchestrator.py         ← Circuit breaker, retry/backoff, concurrent tools (v0.11) ✅
 │   │   └── memory.py               ← Conversation history (Phase 4)
 │   │
 │   ├── tools/
