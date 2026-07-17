@@ -6,6 +6,7 @@ Supports .txt, .md, .py, .json, .csv, .docx, .pdf
 
 import os
 import json
+import difflib
 from pathlib import Path
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -17,6 +18,7 @@ class FileResult:
     content: str | None = None
     path: str | None = None
     error: str | None = None
+    diff: str | None = None  # unified diff, when this result came from changing an existing file
 
 
 def read_file(path: str, max_chars: int = 8000) -> FileResult:
@@ -59,10 +61,29 @@ def read_file(path: str, max_chars: int = 8000) -> FileResult:
         return FileResult(success=False, error=str(e))
 
 
+def _unified_diff(path_label: str, before: str, after: str, max_lines: int = 400) -> str:
+    lines = list(difflib.unified_diff(
+        before.splitlines(keepends=True),
+        after.splitlines(keepends=True),
+        fromfile=f"a/{path_label}",
+        tofile=f"b/{path_label}",
+    ))
+    if len(lines) > max_lines:
+        lines = lines[:max_lines] + [f"\n... diff truncated ({len(lines) - max_lines} more lines) ...\n"]
+    return "".join(lines)
+
+
 def write_file(path: str, content: str, overwrite: bool = False) -> FileResult:
     p = Path(path).expanduser().resolve()
     if p.exists() and not overwrite:
         return FileResult(success=False, error=f"File exists. Pass overwrite=True to replace: {path}")
+
+    before_content = None
+    if p.exists():
+        try:
+            before_content = p.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            before_content = None  # binary or unreadable — skip diffing, still allow the write
 
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -82,7 +103,8 @@ def write_file(path: str, content: str, overwrite: bool = False) -> FileResult:
         if not p.exists():
             return FileResult(success=False, error=f"File was not created at {p}")
 
-        return FileResult(success=True, path=str(p), content=f"File written: {p}")
+        diff = _unified_diff(path, before_content, content_str) if before_content is not None else None
+        return FileResult(success=True, path=str(p), content=f"File written: {p}", diff=diff)
     except Exception as e:
         return FileResult(success=False, error=str(e))
 
@@ -153,6 +175,7 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
         success=True,
         path=str(p),
         content=f"Edited {p} ({occurrences} occurrence{'s' if occurrences != 1 else ''} replaced)",
+        diff=_unified_diff(path, original, updated),
     )
 
 
