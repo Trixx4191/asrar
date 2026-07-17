@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT / 'backend'))
 sys.path.insert(0, str(ROOT / 'backend' / 'core'))
 
 from core.agent import run_task
+from core import orchestrator
 
 
 class DummyProvider:
@@ -18,6 +19,10 @@ class DummyProvider:
 
 
 class ProviderFallbackTest(unittest.TestCase):
+    def setUp(self):
+        orchestrator.reset_circuit("groq")
+        orchestrator.reset_circuit("google")
+
     def test_run_task_fallbacks_on_provider_error(self):
         async def fake_llm_call_with_tools(provider, model_id, messages, system, provider_name):
             if provider_name == 'groq':
@@ -26,7 +31,8 @@ class ProviderFallbackTest(unittest.TestCase):
 
         with patch.dict(os.environ, {'GROQ_API_KEY': 'test', 'GOOGLE_API_KEY': 'test'}), \
              patch('core.agent.get_provider', return_value=DummyProvider()), \
-             patch('core.agent._llm_call_with_tools', new=fake_llm_call_with_tools):
+             patch('core.agent._llm_call_with_tools', new=fake_llm_call_with_tools), \
+             patch('core.orchestrator.retry_delay_seconds', return_value=0):
             response = asyncio.run(run_task('Write a short Python script', history=[], force_model=None, conversation_id=None))
 
         self.assertEqual(response['response'], 'fallback success')

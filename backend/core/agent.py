@@ -33,7 +33,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from core.classifier import classify_task
 from core.router import route, load_registry
-from core import supervisor, memory, hooks
+from core import supervisor, memory, hooks, orchestrator
 from providers import get_provider
 from providers.base import Message
 from tools import web, files, shell, diagnosis, testing, codesearch
@@ -937,6 +937,9 @@ async def run_task(
             continue
         if not provider.is_available():
             continue
+        if not orchestrator.is_available(model["provider"]):
+            last_error = f"{model['display_name']}: provider circuit open (too many recent failures)"
+            continue
 
         attempt_messages = [{"role": m.role, "content": m.content} for m in history]
         attempt_messages.append({"role": "user", "content": user_input})
@@ -945,17 +948,24 @@ async def run_task(
         attempt_failed = False
 
         for iteration in range(10):
-            text, tool_calls = await _llm_call_with_tools(
-                provider=provider,
-                model_id=model["id"],
-                messages=attempt_messages,
-                system=SYSTEM_PROMPT,
-                provider_name=model["provider"],
+            text, tool_calls = await orchestrator.call_with_retry(
+                lambda: _llm_call_with_tools(
+                    provider=provider,
+                    model_id=model["id"],
+                    messages=attempt_messages,
+                    system=SYSTEM_PROMPT,
+                    provider_name=model["provider"],
+                ),
+                on_retry=lambda attempt, delay, err: _log({
+                    "retry": True, "model": model["display_name"],
+                    "attempt": attempt + 1, "delay": delay, "error": err[:200],
+                }),
             )
 
             if _is_provider_error_text(text) and not tool_calls:
                 last_error = f"{model['display_name']}: {text}"
                 attempt_failed = True
+                orchestrator.record_failure(model["provider"])
                 break
 
             if not tool_calls:
@@ -1006,9 +1016,13 @@ async def run_task(
                     ],
                 })
 
-            for tc in tool_calls:
+            tool_results = await orchestrator.run_tool_calls(
+                tool_calls,
+                lambda name, args, idx: _call_tool(name, args, conversation_id=conversation_id),
+            )
+
+            for tc, result in zip(tool_calls, tool_results):
                 logger.info(f"Tool call: {tc['name']}({tc['args']})")
-                result = await _call_tool(tc["name"], tc["args"], conversation_id=conversation_id)
                 tool_success = not any(m in result.lower() for m in _TOOL_FAILURE_MARKERS)
                 attempt_tool_calls.append({
                     "tool": tc["name"],
@@ -1048,6 +1062,7 @@ async def run_task(
             continue
 
         success = True
+        orchestrator.record_success(model["provider"])
         final_text = attempt_text
         all_tool_calls = attempt_tool_calls
         if model_key != candidate_keys[0]:

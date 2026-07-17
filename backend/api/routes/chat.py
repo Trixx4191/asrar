@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from core.agent import run_task, _call_tool, SYSTEM_PROMPT, TOOL_SCHEMAS, get_last_diff
 from core.agent import _to_anthropic_tools, _to_google_tools
 from core.router import route
-from core import memory, supervisor
+from core import memory, supervisor, orchestrator
 from providers import get_provider
 from providers.base import Message
 from tools import shell
@@ -182,6 +182,9 @@ async def chat_stream(req: ChatRequest):
                 continue
             if not candidate_provider.is_available():
                 continue
+            if not orchestrator.is_available(candidate_model.get("provider", "")):
+                last_error = f"{candidate_model['display_name']}: provider circuit open (too many recent failures)"
+                continue
 
             provider = candidate_provider
             chosen_model = candidate_model
@@ -247,10 +250,17 @@ async def chat_stream(req: ChatRequest):
                     headers = {}
                 ra = headers.get("retry-after") or headers.get("Retry-After")
                 last_error = f"Provider error {status}: {text_preview}" + (f" (retry-after={ra})" if ra else "")
+                orchestrator.record_failure(provider_name)
                 continue
             except Exception as e:
                 last_error = str(e)
+                orchestrator.record_failure(provider_name)
                 continue
+        else:
+            provider = None  # loop exhausted every candidate without a `break`
+
+        if provider:
+            orchestrator.record_success(provider_name)
 
         if not provider or not text:
             yield f"data: {json.dumps({'error': f'No available provider/model. Check API keys in .env or no provider succeeded. Last error: {last_error}'})}\n\n"
@@ -388,7 +398,18 @@ async def chat_stream(req: ChatRequest):
             for tc in tool_calls:
                 yield f"data: {json.dumps({'tool_start': tc['name'], 'args': tc['args']})}\n\n"
 
-                result = await _call_tool(tc["name"], tc["args"], conversation_id=conversation_id)
+            diffs_by_index: dict[int, dict] = {}
+
+            async def _run_one(name, args, idx):
+                r = await _call_tool(name, args, conversation_id=conversation_id)
+                d = get_last_diff()
+                if d:
+                    diffs_by_index[idx] = d
+                return r
+
+            tool_results = await orchestrator.run_tool_calls(tool_calls, _run_one)
+
+            for i, (tc, result) in enumerate(zip(tool_calls, tool_results)):
                 tool_success = not any(m in result.lower() for m in ("error:", "❌", "⛔"))
                 all_tool_calls.append({"tool": tc["name"], "args": tc["args"], "result": result[:500], "success": tool_success})
 
@@ -399,9 +420,9 @@ async def chat_stream(req: ChatRequest):
                     if pending:
                         yield f"data: {json.dumps({'approval_required': True, 'action_id': pending['id'], 'command': pending['args'].get('command', ''), 'reason': pending.get('reason', '')})}\n\n"
 
-                last_diff = get_last_diff()
-                if last_diff:
-                    yield f"data: {json.dumps({'diff': True, 'path': last_diff['path'], 'unified_diff': last_diff['diff']})}\n\n"
+                diff = diffs_by_index.get(i)
+                if diff:
+                    yield f"data: {json.dumps({'diff': True, 'path': diff['path'], 'unified_diff': diff['diff']})}\n\n"
 
                 if provider_name == "anthropic":
                     messages.append({
