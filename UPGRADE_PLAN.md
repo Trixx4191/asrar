@@ -1,4 +1,4 @@
-# Asrār Major Upgrade Plan — to be like Claude-Code+ improvements
+# Asrār 
 
 Goal: evolve Asrār into a production-quality agentic platform with a clear orchestrator pipeline, pluggable high-quality classifier, robust provider adapters, stronger safety hooks, concurrent streaming tool execution, and full test coverage.
 
