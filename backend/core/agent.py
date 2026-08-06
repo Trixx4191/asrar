@@ -32,11 +32,17 @@ sys.path.insert(0, str(ROOT / "backend" / "core"))
 sys.path.insert(0, str(ROOT / "backend"))
 
 from core.classifier import classify_task
-from core.router import route, load_registry
+from core.router import route, route_async, load_registry
 from core import supervisor, memory, hooks, orchestrator
+from core import context as context_mgr
 from providers import get_provider
 from providers.base import Message
 from tools import web, files, shell, diagnosis, testing, codesearch
+try:
+    from tools import git_ops, process_mgr, packages, semantic
+except ImportError:
+    git_ops = process_mgr = packages = semantic = None  # type: ignore
+
 
 logger = logging.getLogger("asrar.agent")
 LOG_PATH = ROOT / "logs" / "actions.log"
@@ -415,6 +421,177 @@ TOOL_SCHEMAS: list[dict] = [
             },
         },
     },
+
+    {
+        "type": "function",
+        "function": {
+            "name": "git_status",
+            "description": "Show git status (branch + porcelain changes) for a repo path.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Repo path (default '.')"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_diff",
+            "description": "Show git diff (working tree or staged).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "staged": {"type": "boolean", "description": "If true, show staged diff"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_log",
+            "description": "Show recent commit log (oneline).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "n": {"type": "integer", "description": "Number of commits (default 10)"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_commit",
+            "description": "Stage (optional) and commit. Requires user confirmation.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "message": {"type": "string", "description": "Commit message"},
+                    "add_all": {"type": "boolean", "description": "git add -A before commit"},
+                    "confirmed": {"type": "boolean"}
+                },
+                "required": ["message"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_processes",
+            "description": "List top processes by CPU or memory.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer"},
+                    "sort_by": {"type": "string", "enum": ["cpu", "mem"]}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "inspect_process",
+            "description": "Inspect a single process by PID.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pid": {"type": "integer"}
+                },
+                "required": ["pid"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "kill_process",
+            "description": "Terminate or kill a process. Requires confirmation.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pid": {"type": "integer"},
+                    "force": {"type": "boolean"},
+                    "confirmed": {"type": "boolean"}
+                },
+                "required": ["pid"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "pip_install",
+            "description": "Install a Python package with pip. Requires confirmation.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "package": {"type": "string"},
+                    "upgrade": {"type": "boolean"},
+                    "confirmed": {"type": "boolean"}
+                },
+                "required": ["package"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "npm_install",
+            "description": "Run npm install (optionally a single package). Requires confirmation.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "package": {"type": "string"},
+                    "path": {"type": "string"},
+                    "dev": {"type": "boolean"},
+                    "confirmed": {"type": "boolean"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "semantic_search",
+            "description": "Semantic/hybrid search across a codebase (token-aware regex now; embedding-ready).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "path": {"type": "string"},
+                    "glob": {"type": "string"},
+                    "max_matches": {"type": "integer"}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "rollback_plan",
+            "description": "Restore the conversation plan from the latest (or a specific) checkpoint after a failure.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "checkpoint_id": {"type": "integer", "description": "Optional specific checkpoint id; default = latest"}
+                },
+                "required": []
+            }
+        }
+    },
 ]
 
 
@@ -584,6 +761,94 @@ async def _dispatch_tool(name: str, args: dict, conversation_id: str | None = No
             icon = {"completed": "✓", "in_progress": "→", "pending": "☐"}
             lines = [f"{icon[it['status']]} {it['content']}" for it in cleaned]
             return f"Plan updated ({done}/{len(cleaned)} done):\n" + "\n".join(lines)
+
+
+        elif name == "git_status":
+            if git_ops is None:
+                return "Error: git_ops module not available"
+            r = git_ops.git_status(args.get("path", "."))
+            return git_ops.format_git_result(r)
+
+        elif name == "git_diff":
+            if git_ops is None:
+                return "Error: git_ops module not available"
+            r = git_ops.git_diff(args.get("path", "."), staged=args.get("staged", False))
+            return git_ops.format_git_result(r)
+
+        elif name == "git_log":
+            if git_ops is None:
+                return "Error: git_ops module not available"
+            r = git_ops.git_log(args.get("path", "."), n=args.get("n", 10))
+            return git_ops.format_git_result(r)
+
+        elif name == "git_commit":
+            if git_ops is None:
+                return "Error: git_ops module not available"
+            path = args.get("path", ".")
+            if args.get("add_all"):
+                git_ops.git_add(path)
+            r = git_ops.git_commit(path, args.get("message", ""))
+            return git_ops.format_git_result(r)
+
+        elif name == "list_processes":
+            if process_mgr is None:
+                return "Error: process_mgr not available"
+            r = process_mgr.list_processes(limit=args.get("limit", 30), sort_by=args.get("sort_by", "cpu"))
+            return process_mgr.format_process_result(r)
+
+        elif name == "inspect_process":
+            if process_mgr is None:
+                return "Error: process_mgr not available"
+            r = process_mgr.inspect_process(int(args["pid"]))
+            return process_mgr.format_process_result(r)
+
+        elif name == "kill_process":
+            if process_mgr is None:
+                return "Error: process_mgr not available"
+            r = process_mgr.kill_process(int(args["pid"]), force=args.get("force", False))
+            return process_mgr.format_process_result(r)
+
+        elif name == "pip_install":
+            if packages is None:
+                return "Error: packages module not available"
+            r = await packages.pip_install(args["package"], upgrade=args.get("upgrade", False))
+            return packages.format_package_result(r)
+
+        elif name == "npm_install":
+            if packages is None:
+                return "Error: packages module not available"
+            r = await packages.npm_install(
+                package=args.get("package"),
+                path=args.get("path", "."),
+                dev=args.get("dev", False),
+            )
+            return packages.format_package_result(r)
+
+        elif name == "semantic_search":
+            if semantic is None:
+                return "Error: semantic module not available"
+            r = semantic.semantic_search(
+                query=args["query"],
+                path=args.get("path", "."),
+                glob=args.get("glob"),
+                max_matches=args.get("max_matches", 40),
+            )
+            return semantic.format_semantic_result(r)
+
+        elif name == "rollback_plan":
+            from core import plan_manager
+            if not conversation_id:
+                return "Error: no conversation_id for plan rollback"
+            ckpt = args.get("checkpoint_id")
+            if ckpt is not None:
+                result = plan_manager.rollback_to_checkpoint(conversation_id, int(ckpt))
+            else:
+                result = plan_manager.rollback_last(conversation_id)
+            if not result.get("success"):
+                return f"Error: {result.get('error')}"
+            items = result.get("restored_items") or []
+            lines = [f"- [{it.get('status')}] {it.get('content')}" for it in items]
+            return f"Plan restored from checkpoint {result.get('checkpoint_id')}:\n" + ("\n".join(lines) or "(empty)")
 
         else:
             return f"Unknown tool: {name}"
@@ -914,11 +1179,26 @@ async def run_task(
     """
     history = history or []
 
-    # 1. Classify + route (supervisor-aware if we have a conversation to track)
+    # 1. Classify + route (hybrid + sticky when conversation exists)
+    hist_for_route = None
+    if history:
+        hist_for_route = [
+            {"role": getattr(m, "role", m.get("role") if isinstance(m, dict) else "user"),
+             "content": getattr(m, "content", m.get("content") if isinstance(m, dict) else "")}
+            for m in history
+        ]
     if conversation_id:
-        decision = supervisor.decide_route(conversation_id, user_input, force_model=force_model)
+        try:
+            decision = await supervisor.decide_route_async(
+                conversation_id, user_input, force_model=force_model, history=hist_for_route
+            )
+        except Exception:
+            decision = supervisor.decide_route(conversation_id, user_input, force_model=force_model)
     else:
-        decision = route(user_input, force_model=force_model)
+        try:
+            decision = await route_async(user_input, force_model=force_model, history=hist_for_route)
+        except Exception:
+            decision = route(user_input, force_model=force_model)
 
     registry = load_registry()
     candidate_keys = [decision.selected_model_key] + decision.fallback_chain
@@ -926,6 +1206,61 @@ async def run_task(
     all_tool_calls: list[dict] = []
     last_error = None
     success = False
+
+
+    # Speculative race for fast_chat: fire top-2 models, first good answer wins
+    if (
+        decision.task_type in ("fast_chat", "summarization")
+        and not force_model
+        and len(candidate_keys) >= 2
+        and conversation_id is None  # keep streaming path sequential for event ordering
+    ):
+        race_keys = candidate_keys[:2]
+        race_fns = []
+        race_meta = []
+        for mk in race_keys:
+            model = registry["models"].get(mk)
+            if not model:
+                continue
+            try:
+                prov = get_provider(model["provider"])
+            except Exception:
+                continue
+            if not prov.is_available() or not orchestrator.is_available(model["provider"]):
+                continue
+            msgs = [{"role": getattr(m, "role", "user"), "content": getattr(m, "content", "")} for m in history]
+            msgs.append({"role": "user", "content": user_input})
+
+            def _make(p=prov, mid=model["id"], pn=model["provider"], ms=msgs):
+                async def _call():
+                    return await _llm_call_with_tools(p, mid, ms, SYSTEM_PROMPT, pn)
+                return _call
+            race_fns.append(_make())
+            race_meta.append((mk, model))
+
+        if len(race_fns) >= 2:
+            try:
+                idx, result = await orchestrator.race_models(race_fns, timeout=20.0)
+                text, tool_calls = result
+                if text and not _is_provider_error_text(text):
+                    mk, model = race_meta[idx]
+                    orchestrator.record_success(model["provider"])
+                    decision.selected_model = model
+                    decision.selected_model_key = mk
+                    decision.reason += f" [raced top-{len(race_fns)}; winner={model['display_name']}]"
+                    if conversation_id:
+                        supervisor.after_response(
+                            conversation_id, mk, model, decision.task_type, text, []
+                        )
+                    return {
+                        "response": text,
+                        "model_used": model["display_name"],
+                        "task_type": decision.task_type,
+                        "routing_reason": decision.reason,
+                        "tool_calls": [],
+                    }
+            except Exception:
+                pass  # fall through to sequential path
 
     for model_key in candidate_keys:
         model = registry["models"].get(model_key)
@@ -941,7 +1276,12 @@ async def run_task(
             last_error = f"{model['display_name']}: provider circuit open (too many recent failures)"
             continue
 
-        attempt_messages = [{"role": m.role, "content": m.content} for m in history]
+        # Compact long history before the model call
+        try:
+            compact = await context_mgr.compact_history(history, conversation_id=conversation_id)
+            attempt_messages = list(compact.messages)
+        except Exception:
+            attempt_messages = [{"role": getattr(m, "role", "user"), "content": getattr(m, "content", "")} for m in history]
         attempt_messages.append({"role": "user", "content": user_input})
         attempt_tool_calls: list[dict] = []
         attempt_text = ""
@@ -1103,4 +1443,372 @@ async def run_task(
         "task_type": decision.task_type,
         "routing_reason": decision.reason,
         "tool_calls": all_tool_calls,
+    }
+
+
+
+# ─────────────────────────────────────────────────────────────
+# Streaming agent loop — single source of truth for /chat/stream
+# Yields event dicts; chat.py only serializes them to SSE.
+# ─────────────────────────────────────────────────────────────
+
+async def run_task_stream(
+    user_input: str,
+    history: list | None = None,
+    force_model: str | None = None,
+    conversation_id: str | None = None,
+):
+    """
+    Async generator of agent events:
+      {"meta": True, "model", "provider", "task_type", "reason", "sticky", ...}
+      {"token": "..."}
+      {"tool_start": name, "args": {...}}
+      {"tool_result": name, "preview": "...", "success": bool}
+      {"diff": True, "path": "...", "unified_diff": "..."}
+      {"approval_required": True, "action_id", "command", "reason"}
+      {"nudge": True, "files": [...]}
+      {"done": True, "tool_calls": [...], "response": "..."}
+      {"error": "..."}
+    """
+    history = history or []
+    hist_dicts = []
+    for m in history:
+        if isinstance(m, dict):
+            hist_dicts.append(m)
+        else:
+            hist_dicts.append({"role": getattr(m, "role", "user"), "content": getattr(m, "content", "")})
+
+    # Route (prefer hybrid async when conversation exists)
+    try:
+        if conversation_id:
+            try:
+                decision = await supervisor.decide_route_async(
+                    conversation_id, user_input, force_model=force_model, history=hist_dicts
+                )
+            except AttributeError:
+                decision = supervisor.decide_route(conversation_id, user_input, force_model=force_model)
+        else:
+            try:
+                decision = await route_async(user_input, force_model=force_model, history=hist_dicts)
+            except Exception:
+                decision = route(user_input, force_model=force_model)
+    except Exception as e:
+        yield {"error": f"Routing failed: {e}"}
+        return
+
+    registry = load_registry()
+    candidate_keys = [decision.selected_model_key] + list(decision.fallback_chain or [])
+    all_tool_calls: list[dict] = []
+    last_error = None
+    success = False
+    final_text = ""
+    chosen_model = None
+    chosen_model_key = None
+    provider = None
+    provider_name = None
+    model_id = None
+
+    for model_key in candidate_keys:
+        model = registry.get("models", {}).get(model_key)
+        if not model:
+            continue
+        try:
+            candidate_provider = get_provider(model.get("provider", ""))
+        except Exception:
+            continue
+        if not candidate_provider.is_available():
+            continue
+        if not orchestrator.is_available(model.get("provider", "")):
+            last_error = f"{model['display_name']}: provider circuit open"
+            continue
+
+        provider = candidate_provider
+        chosen_model = model
+        chosen_model_key = model_key
+        provider_name = model["provider"]
+        model_id = model["id"]
+
+        try:
+            compact = await context_mgr.compact_history(hist_dicts, conversation_id=conversation_id)
+            messages: list[dict] = list(compact.messages)
+        except Exception:
+            messages = [{"role": m["role"], "content": m.get("content", "")} for m in hist_dicts]
+        messages.append({"role": "user", "content": user_input})
+        attempt_tool_calls: list[dict] = []
+        attempt_text = ""
+        attempt_failed = False
+
+        # Emit meta once we pick a working candidate (may update on fallback)
+        yield {
+            "meta": True,
+            "model": model["display_name"],
+            "provider": provider_name,
+            "task_type": decision.task_type,
+            "reason": decision.reason,
+            "sticky": getattr(decision, "sticky", False),
+            "classification_source": getattr(decision, "classification_source", "keyword"),
+            "confidence": getattr(decision, "confidence", None),
+        }
+
+        for iteration in range(10):
+            text = ""
+            tool_calls: list[dict] = []
+
+            # Prefer true streaming via provider.stream_complete when available
+            use_stream = hasattr(provider, "stream_complete") and getattr(
+                getattr(provider, "capabilities", None), "streaming", True
+            )
+
+            try:
+                if use_stream:
+                    # True streaming for any provider with stream_complete
+                    from providers.base import Message as PMsg
+                    pmsgs = []
+                    for m in messages:
+                        role = m.get("role", "user")
+                        content = m.get("content") or ""
+                        if isinstance(content, list):
+                            # Flatten anthropic blocks for Message
+                            content = " ".join(
+                                b.get("text", "") for b in content
+                                if isinstance(b, dict) and b.get("type") == "text"
+                            ) or str(content)
+                        pmsgs.append(PMsg(
+                            role=role,
+                            content=content,
+                            tool_call_id=m.get("tool_call_id"),
+                            name=m.get("name"),
+                            tool_calls=m.get("tool_calls"),
+                        ))
+                    tools_arg = TOOL_SCHEMAS if provider_name != "google" else TOOL_SCHEMAS
+                    # Google expects functionDeclarations — provider adapts
+                    async for event in provider.stream_complete(
+                        messages=pmsgs,
+                        model_id=model_id,
+                        system=SYSTEM_PROMPT,
+                        max_tokens=4096,
+                        tools=tools_arg,
+                    ):
+                        et = event.get("type")
+                        if et == "token":
+                            tok = event.get("text") or ""
+                            text += tok
+                            if tok:
+                                yield {"token": tok}
+                        elif et == "done":
+                            resp = event.get("response")
+                            if resp is not None:
+                                if not getattr(resp, "success", True):
+                                    err = getattr(resp, "error", None) or "stream failed"
+                                    last_error = f"{model['display_name']}: {err}"
+                                    attempt_failed = True
+                                    orchestrator.record_failure(provider_name)
+                                    break
+                                text = resp.content or text
+                                tool_calls = list(resp.tool_calls or [])
+                    if attempt_failed:
+                        break
+                else:
+                    # Buffered call (Anthropic/Google or no stream_complete), then emit tokens
+                    async def _one_call():
+                        return await _llm_call_with_tools(
+                            provider=provider,
+                            model_id=model_id,
+                            messages=messages,
+                            system=SYSTEM_PROMPT,
+                            provider_name=provider_name,
+                        )
+
+                    text, tool_calls = await orchestrator.call_with_retry(
+                        _one_call,
+                        on_retry=lambda attempt, delay, err: _log({
+                            "retry": True, "model": model["display_name"],
+                            "attempt": attempt + 1, "delay": delay, "error": str(err)[:200],
+                        }),
+                    )
+                    if _is_provider_error_text(text) and not tool_calls:
+                        last_error = f"{model['display_name']}: {text}"
+                        attempt_failed = True
+                        orchestrator.record_failure(provider_name)
+                        break
+                    # Emit collected text as tokens for UI smoothness
+                    chunk = 12
+                    for i in range(0, len(text or ""), chunk):
+                        yield {"token": text[i : i + chunk]}
+            except Exception as e:
+                last_error = f"{model['display_name']}: {e}"
+                attempt_failed = True
+                orchestrator.record_failure(provider_name)
+                break
+
+            if attempt_failed:
+                break
+
+            if not tool_calls:
+                if conversation_id and iteration < 9:
+                    vstate = memory.get_verification_state(conversation_id)
+                    if vstate["dirty"] and not vstate["nudged"]:
+                        memory.set_nudged(conversation_id)
+                        _log({"verification_nudge": True, "dirty_files": vstate["dirty_files"]})
+                        yield {"nudge": True, "files": vstate["dirty_files"][:5]}
+                        messages.append({"role": "assistant", "content": text or ""})
+                        changed = ", ".join(vstate["dirty_files"][:5]) or "the file(s) you changed"
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                f"Before you finish: you changed {changed} but haven't verified "
+                                "it/them yet. Run run_tests (or execute_code if there's no test "
+                                "suite), fix anything that fails, then give your real final "
+                                "answer. If there's genuinely no way to verify this, say so "
+                                "explicitly instead of skipping it."
+                            ),
+                        })
+                        continue
+                attempt_text = text or ""
+                break
+
+            # Append assistant turn
+            if provider_name == "anthropic":
+                asst_content = []
+                if text:
+                    asst_content.append({"type": "text", "text": text})
+                for tc in tool_calls:
+                    asst_content.append({
+                        "type": "tool_use",
+                        "id": tc["id"],
+                        "name": tc["name"],
+                        "input": tc["args"],
+                    })
+                messages.append({"role": "assistant", "content": asst_content})
+            else:
+                messages.append({
+                    "role": "assistant",
+                    "content": text or "",
+                    "tool_calls": [
+                        {
+                            "id": tc["id"],
+                            "type": "function",
+                            "function": {"name": tc["name"], "arguments": json.dumps(tc["args"])},
+                        }
+                        for tc in tool_calls
+                    ],
+                })
+
+            for tc in tool_calls:
+                yield {"tool_start": tc["name"], "args": tc["args"]}
+
+            diffs_by_index: dict[int, dict] = {}
+
+            async def _run_one(name, args, idx):
+                r = await _call_tool(name, args, conversation_id=conversation_id)
+                d = get_last_diff()
+                if d:
+                    diffs_by_index[idx] = d
+                return r
+
+            tool_results = await orchestrator.run_tool_calls(tool_calls, _run_one)
+
+            for i, (tc, result) in enumerate(zip(tool_calls, tool_results)):
+                tool_success = not any(m in result.lower() for m in _TOOL_FAILURE_MARKERS)
+                attempt_tool_calls.append({
+                    "tool": tc["name"],
+                    "args": tc["args"],
+                    "result": result[:500],
+                    "success": tool_success,
+                })
+                yield {
+                    "tool_result": tc["name"],
+                    "preview": result[:300],
+                    "success": tool_success,
+                }
+
+                if result.startswith("⛔") and conversation_id:
+                    # Any gated tool (run_command, pip_install, git_commit, kill_process, …)
+                    pending = memory.get_latest_pending_action(conversation_id, tool=tc["name"])
+                    if not pending:
+                        pending = memory.get_latest_pending_action(conversation_id)
+                    if pending:
+                        args = pending.get("args") or {}
+                        cmd = args.get("command") or args.get("package") or args.get("message") or str(args)[:200]
+                        yield {
+                            "approval_required": True,
+                            "action_id": pending["id"],
+                            "command": cmd,
+                            "reason": pending.get("reason", ""),
+                        }
+
+                diff = diffs_by_index.get(i)
+                if diff:
+                    yield {
+                        "diff": True,
+                        "path": diff["path"],
+                        "unified_diff": diff["diff"],
+                    }
+
+                if provider_name == "anthropic":
+                    messages.append({
+                        "role": "user",
+                        "content": [{
+                            "type": "tool_result",
+                            "tool_use_id": tc["id"],
+                            "content": result,
+                        }],
+                    })
+                elif provider_name == "google":
+                    messages.append({
+                        "role": "tool",
+                        "name": tc["name"],
+                        "content": result,
+                    })
+                else:
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": result,
+                    })
+
+        if attempt_failed:
+            continue
+
+        success = True
+        orchestrator.record_success(provider_name)
+        final_text = attempt_text
+        all_tool_calls = attempt_tool_calls
+        if model_key != candidate_keys[0]:
+            decision.reason += f" Fallbacked to '{model['display_name']}' after an earlier model failed."
+        decision.selected_model = model
+        decision.selected_model_key = model_key
+        break
+
+    if not success:
+        yield {
+            "error": f"No available provider/model. Last error: {last_error}",
+        }
+        return
+
+    if conversation_id:
+        supervisor.after_response(
+            conversation_id,
+            decision.selected_model_key,
+            decision.selected_model,
+            decision.task_type,
+            final_text,
+            all_tool_calls,
+        )
+
+    _log({
+        "task": user_input[:120],
+        "task_type": decision.task_type,
+        "model": decision.selected_model["display_name"],
+        "tools": [t["tool"] for t in all_tool_calls],
+        "stream": True,
+    })
+
+    yield {
+        "done": True,
+        "tool_calls": all_tool_calls,
+        "response": final_text,
+        "model_used": decision.selected_model["display_name"],
+        "task_type": decision.task_type,
+        "routing_reason": decision.reason,
     }

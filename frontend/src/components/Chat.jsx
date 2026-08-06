@@ -10,7 +10,7 @@ function ToolCall({ name, args, result, success }) {
     .join(", ");
 
   let statusNode;
-  if (result === undefined || result === "") {
+  if (result === undefined || result === null || result === "") {
     statusNode = <span className="tool-call-status running">⟳</span>;
   } else if (success === false) {
     statusNode = <span className="tool-call-status failed">✗</span>;
@@ -61,15 +61,21 @@ function Message({ msg }) {
     <div className={`message ${msg.role}`}>
       <div className="message-meta">
         {msg.role === "user" ? "you" : (
-          <ModelBadge model={msg.model} taskType={msg.taskType} />
-        )}
-        {msg.sticky && (
-          <span className="sticky-badge" title="Stayed with the same model because a clarifying question was still open">
-            ↳ continuing
-          </span>
+          <ModelBadge
+            model={msg.model}
+            taskType={msg.taskType}
+            classificationSource={msg.classificationSource}
+            confidence={msg.confidence}
+            sticky={msg.sticky}
+          />
         )}
         <span>{msg.time}</span>
       </div>
+      {msg.routingReason && (
+        <div className="routing-reason" title={msg.routingReason}>
+          {msg.routingReason}
+        </div>
+      )}
 
       {/* Tool call blocks — shown above the text */}
       {msg.toolCalls?.length > 0 && (
@@ -334,12 +340,15 @@ export default function Chat({ forceModel, models = [], onForceModelChange }) {
             setConversationId(chunk.conversation_id);
 
           } else if (chunk.meta) {
-            // Routing metadata — update model badge
+            // Routing metadata — model, task type, classifier source/confidence, reason
             updateAssistant(m => ({
               ...m,
               model: { display_name: chunk.model, provider: chunk.provider || "auto" },
               taskType: chunk.task_type,
               sticky: !!chunk.sticky,
+              classificationSource: chunk.classification_source || null,
+              confidence: typeof chunk.confidence === "number" ? chunk.confidence : null,
+              routingReason: chunk.reason || null,
             }));
 
           } else if (chunk.token) {
@@ -384,11 +393,10 @@ export default function Chat({ forceModel, models = [], onForceModelChange }) {
             }));
 
           } else if (chunk.approval_required) {
-            // A destructive command is blocked pending real human approval —
-            // not the model's self-reported confirmed=true. Show real buttons.
+            // Human-gated approval for destructive shell / package / git / kill
             setPendingApproval({
               action_id: chunk.action_id,
-              command: chunk.command,
+              command: chunk.command || chunk.reason || "(action requires approval)",
               reason: chunk.reason,
             });
 
@@ -398,8 +406,17 @@ export default function Chat({ forceModel, models = [], onForceModelChange }) {
             updateAssistant(m => ({ ...m, nudging: true, nudgeFiles: chunk.files || [] }));
 
           } else if (chunk.done) {
-            // Stream complete
-            updateAssistant(m => ({ ...m, streaming: false, nudging: false }));
+            // Stream complete — fold any final metadata from the done event
+            updateAssistant(m => ({
+              ...m,
+              streaming: false,
+              nudging: false,
+              model: chunk.model_used
+                ? { display_name: chunk.model_used, provider: m.model?.provider || "auto" }
+                : m.model,
+              taskType: chunk.task_type || m.taskType,
+              routingReason: chunk.routing_reason || m.routingReason,
+            }));
 
           } else if (chunk.error) {
             updateAssistant(m => ({
@@ -412,9 +429,15 @@ export default function Chat({ forceModel, models = [], onForceModelChange }) {
         }
       }
 
-      // Refresh the rail so the (possibly new, possibly re-titled-by-recency) conversation shows up.
+      // Refresh rail + plan panel from backend truth
       fetchConversations();
-      if (isNewConversation) { /* nothing else to do — id was captured above */ }
+      if (conversationIdRef.current) {
+        try {
+          const pr = await fetch(`${API}/conversations/${conversationIdRef.current}/plan`);
+          const pd = await pr.json();
+          if (pd.plan) setPlan(pd.plan);
+        } catch { /* ignore */ }
+      }
     } catch (e) {
       if (e.name !== "AbortError") {
         updateAssistant(m => ({

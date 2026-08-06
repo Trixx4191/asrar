@@ -1,7 +1,7 @@
 {
   "name": "asrar",
-  "version": "0.1.0",
-  "description": "Asrār — Local Agentic AI Desktop",
+  "version": "0.12.0",
+  "description": "Asr\u0101r \u2014 Local Agentic AI Desktop",
   "main": "electron/main.js",
   "scripts": {
     "dev": "concurrently \"vite\" \"electron .\"",
@@ -21,7 +21,7 @@
   },
   "build": {
     "appId": "ai.asrar.agent",
-    "productName": "Asrār",
+    "productName": "Asr\u0101r",
     "directories": {
       "output": "dist-electron"
     },
