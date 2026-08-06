@@ -170,6 +170,9 @@ async def call_with_retry(fn, *, max_retries: int = 2, on_retry=None):
 READ_ONLY_TOOLS = {
     "read_file", "list_dir", "web_search", "fetch_page",
     "diagnose_system", "search_code", "find_files",
+    "git_status", "git_diff", "git_log",
+    "list_processes", "inspect_process",
+    "semantic_search",
 }
 
 
@@ -210,3 +213,61 @@ async def run_tool_calls(tool_calls: list[dict], call_tool_fn) -> list[str]:
             results[i] = await call_tool_fn(tool_calls[i]["name"], tool_calls[i]["args"], i)
             i += 1
     return results
+
+
+
+# ─────────────────────────────────────────────────────────────
+# Speculative dual-model race (fast_chat / simple tasks)
+# Fire top-2 candidates; first successful non-empty text wins.
+# ─────────────────────────────────────────────────────────────
+
+async def race_models(
+    callables: list,
+    *,
+    timeout: float = 25.0,
+) -> tuple[int, object]:
+    """
+    callables: list of zero-arg async callables each returning a result.
+    Returns (winner_index, result). Cancels the losers.
+    """
+    if not callables:
+        raise ValueError("race_models requires at least one callable")
+    if len(callables) == 1:
+        return 0, await callables[0]()
+
+    tasks = [asyncio.create_task(fn()) for fn in callables]
+    done, pending = await asyncio.wait(
+        tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+    )
+    winner_idx = None
+    winner_result = None
+    for i, task in enumerate(tasks):
+        if task in done and not task.cancelled():
+            try:
+                result = task.result()
+            except Exception:
+                continue
+            # Prefer a "good" result: for (text, tool_calls) tuples, non-error text
+            if isinstance(result, tuple) and len(result) >= 1:
+                text = result[0]
+                if isinstance(text, str) and text.strip() and not text.startswith("Provider HTTP"):
+                    winner_idx = i
+                    winner_result = result
+                    break
+            else:
+                winner_idx = i
+                winner_result = result
+                break
+    for task in pending:
+        task.cancel()
+    if winner_idx is None:
+        # Fall back to first completed even if error-like
+        for i, task in enumerate(tasks):
+            if task.done() and not task.cancelled():
+                try:
+                    return i, task.result()
+                except Exception as e:
+                    continue
+        # Everything failed — await first and surface
+        return 0, await callables[0]()
+    return winner_idx, winner_result

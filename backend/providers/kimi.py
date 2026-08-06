@@ -1,74 +1,36 @@
-"""Kimi Provider — basic OpenAI-compatible wrapper for Kimi endpoints
-"""
+"""Kimi Provider (OpenAI-compatible)"""
 
+from __future__ import annotations
 import os
-import json
-import httpx
-from .base import BaseProvider, Message, ProviderResponse
-
+from typing import AsyncIterator
+from .base import BaseProvider, Message, ProviderResponse, ProviderCapabilities
+from .openai_compat import openai_complete, openai_stream
 
 class KimiProvider(BaseProvider):
     name = "kimi"
-
+    capabilities = ProviderCapabilities(
+        streaming=True, native_tools=True, vision=False, json_mode=True,
+        system_message=True, max_context=128000,
+        tool_calling_quality=0.8, reasoning_quality=0.85, speed_score=0.75,
+    )
     def __init__(self):
+        super().__init__()
         self.api_key = os.getenv("KIMI_API_KEY", "")
         self.base_url = os.getenv("KIMI_API_BASE", "https://api.kimi.ai")
-
     def is_available(self) -> bool:
         return bool(self.api_key)
-
-    async def complete(self, messages, model_id, system=None, max_tokens=2048, stream=False) -> ProviderResponse:
-        all_messages = []
-        if system:
-            all_messages.append({"role": "system", "content": system})
-        all_messages += [{"role": m.role, "content": m.content} for m in messages]
-
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-        body = {"model": model_id, "messages": all_messages, "max_tokens": max_tokens, "stream": stream}
-
-        try:
-            if stream:
-                return self._stream(headers, body, model_id)
-
-            async with httpx.AsyncClient(timeout=60) as client:
-                r = await client.post(f"{self.base_url}/chat/completions", headers=headers, json=body)
-                r.raise_for_status()
-                data = r.json()
-                return ProviderResponse(
-                    content=data["choices"][0]["message"]["content"],
-                    model_id=model_id,
-                    provider=self.name,
-                    input_tokens=data.get("usage", {}).get("prompt_tokens", 0),
-                    output_tokens=data.get("usage", {}).get("completion_tokens", 0),
-                )
-        except httpx.HTTPStatusError as e:
-            status = getattr(getattr(e, "response", None), "status_code", "?")
-            try:
-                preview = e.response.text[:200]
-            except Exception:
-                preview = "(unable to read error body)"
-            try:
-                headers = dict(e.response.headers or {})
-            except Exception:
-                headers = {}
-            ra = headers.get("retry-after") or headers.get("Retry-After")
-            msg = f"Provider HTTP {status}: {preview}" + (f" (retry-after={ra})" if ra else "")
-            return ProviderResponse(content="", model_id=model_id, provider=self.name, success=False, error=msg)
-        except Exception as e:
-            return ProviderResponse(content="", model_id=model_id, provider=self.name, success=False, error=str(e))
-
-    async def _stream(self, headers, body, model_id):
-        async with httpx.AsyncClient(timeout=60) as client:
-            async with client.stream("POST", f"{self.base_url}/chat/completions", headers=headers, json=body) as r:
-                async for line in r.aiter_lines():
-                    if line.startswith("data:"):
-                        data = line[5:].strip()
-                        if data == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(data)
-                            delta = chunk["choices"][0]["delta"].get("content", "")
-                            if delta:
-                                yield delta
-                        except Exception:
-                            pass
+    def headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+    async def complete(self, messages, model_id, system=None, max_tokens=2048, stream=False, tools=None, temperature=None) -> ProviderResponse:
+        return await openai_complete(
+            base_url=self.base_url, headers=self.headers(), model_id=model_id,
+            messages=messages, system=system, max_tokens=max_tokens, tools=tools,
+            temperature=temperature, provider_name=self.name,
+        )
+    async def stream_complete(self, messages, model_id, system=None, max_tokens=2048, tools=None, temperature=None) -> AsyncIterator[dict]:
+        async for ev in openai_stream(
+            base_url=self.base_url, headers=self.headers(), model_id=model_id,
+            messages=messages, system=system, max_tokens=max_tokens, tools=tools,
+            temperature=temperature, provider_name=self.name,
+        ):
+            yield ev

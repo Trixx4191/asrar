@@ -163,3 +163,89 @@ def run_post_tool_hooks(name: str, args: dict, result: str, conversation_id: str
         if r.note:
             return r
     return HookResult()
+
+# ── Extra gates for new tools (packages, process kill, git commit) ──
+
+_DESTRUCTIVE_TOOLS = {
+    "pip_install", "npm_install", "kill_process", "git_commit", "git_add",
+}
+
+
+def _gate_new_destructive_tools(name: str, args: dict, conversation_id: str | None) -> HookResult:
+    """Package installs, process kills, and git commits need confirmation."""
+    if name not in _DESTRUCTIVE_TOOLS:
+        return HookResult()
+    if args.get("confirmed"):
+        return HookResult()
+    if not conversation_id:
+        return HookResult(
+            blocked=True,
+            reason=f"{name} requires explicit confirmation (confirmed=true) after user approval.",
+        )
+    action_id = memory.create_pending_action(
+        conversation_id, name, args, reason=f"Destructive tool: {name}"
+    )
+    return HookResult(
+        blocked=True,
+        reason=(
+            f"{name} is gated. Waiting for human Approve/Deny in the UI "
+            f"(action_id={action_id})."
+        ),
+        action_id=action_id,
+    )
+
+
+def _checkpoint_before_mutating(name: str, args: dict, conversation_id: str | None) -> HookResult:
+    """Save a plan checkpoint before mutating tools so rollback is possible."""
+    mutating = {
+        "write_file", "edit_file", "create_project", "run_command",
+        "pip_install", "npm_install", "git_commit", "git_add",
+    }
+    if name not in mutating or not conversation_id:
+        return HookResult()
+    try:
+        from core.plan_manager import checkpoint_before_step
+        label = args.get("path") or args.get("name") or name
+        checkpoint_before_step(conversation_id, str(label)[:80])
+    except Exception:
+        pass
+    return HookResult()
+
+
+def _post_tool_rollback_hint(name: str, args: dict, result: str, conversation_id: str | None) -> HookResult:
+    """On failure of a mutating tool, mark in-progress plan step and hint rollback."""
+    if not conversation_id:
+        return HookResult()
+    failed = any(m in (result or "").lower() for m in ("error:", "❌", "failed", "exit "))
+    mutating = {
+        "write_file", "edit_file", "create_project", "run_command",
+        "pip_install", "npm_install", "git_commit",
+    }
+    if not failed or name not in mutating:
+        return HookResult()
+    try:
+        from core.plan_manager import mark_step_failed
+        mark_step_failed(conversation_id)
+        note = (
+            " Plan step marked pending after failure. "
+            "You can call rollback_plan to restore the previous checkpoint if needed."
+        )
+        return HookResult(note=note)
+    except Exception:
+        return HookResult()
+
+
+
+
+# Rebuild hook lists after all functions are defined
+PRE_TOOL_HOOKS = [
+    _gate_project_creation_on_plan,
+    _gate_destructive_commands,
+    _gate_new_destructive_tools,
+    _checkpoint_before_mutating,
+]
+
+POST_TOOL_HOOKS = [
+    _flag_tool_failures,
+    _post_tool_rollback_hint,
+]

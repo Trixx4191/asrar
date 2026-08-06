@@ -118,6 +118,28 @@ def init_db() -> None:
             )
         """)
 
+        # Plan checkpoints — snapshots of plan state for rollback after tool failure
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS plan_checkpoints (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                label           TEXT,
+                items           TEXT NOT NULL,
+                created_at      TEXT NOT NULL
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_plan_ckpt_conv ON plan_checkpoints(conversation_id)")
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_summaries (
+                conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+                summary         TEXT NOT NULL,
+                up_to_count     INTEGER NOT NULL DEFAULT 0,
+                updated_at      TEXT NOT NULL
+            )
+        """)
+
+
         # Verification state — tracks whether code files were changed since
         # the last run_tests/execute_code call, so the agent loop can nudge
         # the model to verify its own work before declaring a turn done
@@ -377,6 +399,73 @@ def get_plan(conversation_id: str) -> list[dict]:
         return json.loads(row["items"])
     except (json.JSONDecodeError, TypeError):
         return []
+
+
+# ─────────────────────────────────────────────────────────────
+# Plan checkpoints — save / list / restore for rollback
+# ─────────────────────────────────────────────────────────────
+
+def save_plan_checkpoint(conversation_id: str, label: str | None = None) -> int:
+    """Snapshot current plan items. Returns checkpoint id."""
+    items = get_plan(conversation_id)
+    with _conn() as c:
+        cur = c.execute(
+            """INSERT INTO plan_checkpoints (conversation_id, label, items, created_at)
+               VALUES (?, ?, ?, ?)""",
+            (conversation_id, label or "", json.dumps(items), _now()),
+        )
+        return int(cur.lastrowid)
+
+
+def list_plan_checkpoints(conversation_id: str, limit: int = 10) -> list[dict]:
+    with _conn() as c:
+        rows = c.execute(
+            """SELECT id, label, items, created_at FROM plan_checkpoints
+               WHERE conversation_id = ?
+               ORDER BY id DESC LIMIT ?""",
+            (conversation_id, limit),
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["items"] = json.loads(d["items"])
+        except (json.JSONDecodeError, TypeError):
+            d["items"] = []
+        out.append(d)
+    return out
+
+
+def restore_plan_checkpoint(conversation_id: str, checkpoint_id: int) -> bool:
+    """Restore plan items from a checkpoint. Returns True if found."""
+    with _conn() as c:
+        row = c.execute(
+            """SELECT items FROM plan_checkpoints
+               WHERE id = ? AND conversation_id = ?""",
+            (checkpoint_id, conversation_id),
+        ).fetchone()
+    if not row:
+        return False
+    try:
+        items = json.loads(row["items"])
+    except (json.JSONDecodeError, TypeError):
+        return False
+    set_plan(conversation_id, items)
+    return True
+
+
+def clear_old_checkpoints(conversation_id: str, keep: int = 5) -> None:
+    """Keep only the newest N checkpoints per conversation."""
+    with _conn() as c:
+        c.execute(
+            """DELETE FROM plan_checkpoints WHERE conversation_id = ?
+               AND id NOT IN (
+                   SELECT id FROM plan_checkpoints
+                   WHERE conversation_id = ?
+                   ORDER BY id DESC LIMIT ?
+               )""",
+            (conversation_id, conversation_id, keep),
+        )
 
 
 # ─────────────────────────────────────────────────────────────
