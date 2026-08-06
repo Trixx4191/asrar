@@ -1171,3 +1171,27 @@ input, textarea {
   max-height: 200px;
   overflow-y: auto;
 }
+
+
+/* Routing reason — classifier/router explanation under message meta */
+.routing-reason {
+  font-size: 10.5px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  max-width: 560px;
+  line-height: 1.45;
+  opacity: 0.85;
+  margin-top: -2px;
+  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.routing-reason:hover {
+  white-space: normal;
+  opacity: 1;
+}
+
+.classify-badge {
+  letter-spacing: 0.02em;
+}

@@ -33,7 +33,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core import memory
-from core.router import route, load_registry, RoutingDecision
+from core.router import route, route_async, load_registry, RoutingDecision
 from providers import get_provider
 
 
@@ -144,3 +144,57 @@ def after_response(
             {"tool_calls": len(tool_calls or [])},
             model=model.get("display_name", model_key),
         )
+
+
+async def decide_route_async(
+    conversation_id: str,
+    user_input: str,
+    force_model: str | None = None,
+    history: list[dict] | None = None,
+) -> RoutingDecision:
+    """Same as decide_route but uses hybrid classifier with conversation context."""
+    if force_model:
+        decision = await route_async(user_input, force_model=force_model, history=history)
+        memory.log_event(conversation_id, "manual_override", {"model": force_model})
+        return decision
+
+    state = memory.get_state(conversation_id)
+
+    if state and state.get("awaiting_clarification"):
+        pending_key = state.get("pending_model_key")
+        registry = load_registry()
+        pending_model = registry["models"].get(pending_key)
+        if pending_model:
+            try:
+                pending_available = get_provider(pending_model["provider"]).is_available()
+            except Exception:
+                pending_available = False
+            if pending_available:
+                decision = RoutingDecision(
+                    task_type=state.get("pending_task_type") or "general",
+                    selected_model_key=pending_key,
+                    selected_model=pending_model,
+                    fallback_chain=[],
+                    reason=f"Sticky: continuing clarification with {pending_model.get('display_name')}",
+                    sticky=True,
+                )
+                memory.log_event(
+                    conversation_id,
+                    "sticky_route",
+                    {"model": pending_key, "reason": decision.reason},
+                )
+                return decision
+
+    decision = await route_async(user_input, force_model=None, history=history)
+    memory.log_event(
+        conversation_id,
+        "fresh_route",
+        {
+            "model": decision.selected_model_key,
+            "task_type": decision.task_type,
+            "source": decision.classification_source,
+            "confidence": decision.confidence,
+            "reason": decision.reason,
+        },
+    )
+    return decision
