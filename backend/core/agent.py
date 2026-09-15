@@ -33,7 +33,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from core.classifier import classify_task
 from core.router import route, route_async, load_registry
-from core import supervisor, memory, hooks, orchestrator
+from core import supervisor, memory, hooks, orchestrator, skills as skill_catalog
 from core import context as context_mgr
 from providers import get_provider
 from providers.base import Message
@@ -55,6 +55,9 @@ IMPORTANT AGENTIC BEHAVIOR:
 - When asked to create, edit, or modify files/projects, use your tools to actually do it — don't just describe what you'd do.
 - Use tools for each step. Verify success. Report exact paths and results.
 - Think step-by-step and chain tool calls when needed.
+- Repository workflow skills are available as reusable playbooks. When a task matches
+    one, call list_skills to discover it and use_skill to load it before acting. Skills
+    provide guidance only; use the normal tools and approval flow for real operations.
 - For anything that takes more than one tool call (a project with multiple files, multi-step
   research, anything with 3+ distinct steps), call update_plan FIRST to lay out the steps, then keep
   it current: mark a step in_progress when you start it, completed when you finish it. This keeps
@@ -439,6 +442,32 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "list_skills",
+            "description": "List the repository workflow skills available to guide this task.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "use_skill",
+            "description": "Load one repository workflow skill by name and return its Markdown playbook. Use list_skills first when unsure of the name.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Skill directory/name, for example code-review or commit"}
+                },
+                "required": ["name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "git_diff",
             "description": "Show git diff (working tree or staged).",
             "parameters": {
@@ -715,6 +744,21 @@ async def _dispatch_tool(name: str, args: dict, conversation_id: str | None = No
         elif name == "find_files":
             r = codesearch.find_files(pattern=args["pattern"], path=args.get("path", "."))
             return codesearch.format_find_files_result(r)
+
+        elif name == "list_skills":
+            available = skill_catalog.list_skills()
+            if not available:
+                return "No repository skills are available."
+            return "\n".join(
+                f"- {skill['name']}: {skill['description']} ({skill['path']})"
+                for skill in available
+            )
+
+        elif name == "use_skill":
+            skill = skill_catalog.load_skill(args["name"])
+            if not skill:
+                return f"Error: unknown or invalid skill '{args['name']}'. Call list_skills to see available skills."
+            return f"Loaded skill: {skill['name']}\n\n{skill['content']}"
 
         elif name == "run_tests":
             r = await testing.run_tests(

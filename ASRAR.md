@@ -35,17 +35,18 @@ and falls back gracefully if anything fails.
 | Capability         | Description                                              | Status  |
 |--------------------|----------------------------------------------------------|---------|
 | 🧠 AI Reasoning    | Multi-model routing — best model per task                | ✅ Live  |
-| 🌐 Web Research    | Browse, search, and summarize the web                    | 🔜 Soon |
-| 📄 Document Work   | Read, write, edit .docx, .pdf, .txt, .md files          | 🔜 Soon |
-| 💻 PC Automation   | Run shell commands, move files, launch apps              | 🔜 Soon |
+| 🌐 Web Research    | Browse, search, and summarize the web                    | ✅ Live  |
+| 📄 Document Work   | Read, write, edit .docx, .pdf, .txt, .md files          | ✅ Live  |
+| 💻 PC Automation   | Run shell commands, install packages, and manage processes | ✅ Live  |
 | ✅ Self-Verification | Runs tests / executes code to check its own edits before calling a task done | ✅ Live  |
 | 🔎 Codebase Awareness | Greps/globs a project before editing instead of guessing at structure | ✅ Live  |
 | 📝 Diff Review     | Shows exact unified diffs for file edits instead of just "done"          | ✅ Live  |
 | 🛑 Human-Gated Approval | Destructive commands need a real Approve/Deny click, not model self-report | ✅ Live  |
 | ⚡ Concurrent Tools | Independent reads (search/grep/list) run in parallel, not one at a time      | ✅ Live  |
 | 🔌 Circuit Breaker | Stops hammering a repeatedly-failing provider instead of retrying it forever | ✅ Live  |
-| 🔧 PC Diagnosis    | Read logs, detect crashes, suggest and apply fixes       | 🔜 Soon |
+| 🔧 PC Diagnosis    | Read logs, inspect processes, and report system faults   | ✅ Live  |
 | ➕ Model Registry  | Add new models by name or URL — agent self-registers     | ✅ Live  |
+| 🧩 Workflow Skills | Load reusable Markdown playbooks for Git, CI, review, and troubleshooting | ✅ Live  |
 
 ---
 
@@ -87,6 +88,7 @@ confirm_shell_cmds  = true       # Ask before running shell commands
 safe_mode           = false      # Refuse destructive commands unless confirmed
 memory_enabled      = true       # Long-term memory — conversations persisted in SQLite (data/asrar.db)
 stream_responses    = true       # Stream output token by token
+skills_enabled      = true       # Discover/load playbooks from skills/*/SKILL.md
 ```
 
 ---
@@ -115,6 +117,20 @@ Example tone:
 - Asrār will **refuse** commands that could damage the OS unless overridden
 - API keys are stored locally in `.env` and never sent to any model
 
+## [skills]
+
+Workflow skills are Markdown playbooks under `skills/{name}/SKILL.md`. Each
+skill has frontmatter with a matching `name` and a short `description`.
+
+The agent exposes two read-only internal tools:
+
+- `list_skills` discovers valid skills and their descriptions.
+- `use_skill` loads one named playbook into the current model context.
+
+Skills guide a workflow but do not run commands or bypass approval gates. The
+agent still uses its normal tools for edits, tests, shell commands, Git,
+package installation, and other side effects.
+
 ---
 
 ## [file_structure]
@@ -126,6 +142,8 @@ asrar/
 ├── .env.example              ← Template for keys
 ├── config/
 │   └── models.json           ← Live model registry (agent can edit this)
+├── skills/                   ← Reusable workflow playbooks
+│   └── {name}/SKILL.md
 ├── backend/
 │   ├── core/
 │   │   ├── classifier.py     ← Task type detection
