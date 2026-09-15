@@ -23,7 +23,7 @@ frontend/build/
 frontend/.cache/
 frontend/.parcel-cache/
 frontend/coverage/
-
+frontend/dist-electron/
 # Electron
 frontend/electron/dist/
 

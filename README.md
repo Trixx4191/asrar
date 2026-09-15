@@ -25,6 +25,7 @@ Codebase map: [`LAYOUT.md`](./LAYOUT.md).
 | Circuit breaker + retry | Backs off a provider after repeated failures; retries transient errors before falling back to a worse model |
 | Concurrent tools | Runs independent reads (search/grep/list) in parallel instead of one at a time |
 | Persistent memory | Every conversation, plan, and tool call is stored in SQLite and survives a restart |
+| Workflow skills | Loads reusable Markdown playbooks from `skills/` through agent tools |
 
 ---
 
@@ -46,6 +47,13 @@ pip install -r requirements.txt   #  use a venv
 cd frontend
 npm install
 ```
+
+**Workflow skills**
+
+Reusable repository workflows live in `skills/*/SKILL.md`. The agent can
+discover them with its internal `list_skills` tool and load one with
+`use_skill`. Skills provide procedure and guardrails; filesystem, shell, Git,
+package, and approval operations still go through the normal agent tools.
 
 **API keys** — create a `.env` file in the project root:
 ```bash
@@ -140,6 +148,7 @@ backend/
   core/           agent loop, router, classifier, supervisor, hooks, memory, orchestrator
   providers/      one thin adapter per model provider (anthropic, groq, google, ...)
   tools/          what the agent can actually do (files, shell, web, testing, codesearch, ...)
+skills/           reusable workflow playbooks (review, CI, Git, sync, troubleshooting, ...)
 frontend/
   src/            React + Electron desktop UI
 config/
