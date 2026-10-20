@@ -1,4 +1,5 @@
-export const API = "http://127.0.0.1:8000";
+export const API = window.location.pathname.startsWith("/desktop")
+  ? window.location.origin : "http://127.0.0.1:8000";
 
 export function apiFetch(path, options = {}) {
   return fetch(path.startsWith("http") ? path : `${API}${path}`, {

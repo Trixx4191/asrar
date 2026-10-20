@@ -77,3 +77,8 @@ ipcMain.handle("choose-workspace", async event => {
   const result = await dialog.showOpenDialog(mainWindow, { title: "Choose an Asrār workspace", properties: ["openDirectory"] });
   return result.canceled ? null : result.filePaths[0];
 });
+ipcMain.handle("choose-context-files", async event => {
+  if (!trustedFrame(event)) throw new Error("Untrusted window");
+  const result = await dialog.showOpenDialog(mainWindow, { title: "Add files from your workspace", properties: ["openFile", "multiSelections"] });
+  return result.canceled ? [] : result.filePaths.slice(0, 8);
+});

@@ -3,6 +3,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+from pathlib import Path
 
 from core import memory
 from core.codex_bridge import bridge, AUTH_HOME, CodexError
@@ -21,7 +22,7 @@ def save_session(conversation_id, thread_id, workspace, scope):
                      (conversation_id, thread_id, workspace, scope))
 
 
-async def stream_chat(message, conversation_id, model=None, effort=None):
+async def stream_chat(message, conversation_id, model=None, effort=None, context_files=None):
     """One in-flight turn per conversation; cleanup interrupts real execution."""
     if conversation_id in bridge.active:
         yield {"error": "This conversation already has a running task"}
@@ -41,6 +42,15 @@ async def stream_chat(message, conversation_id, model=None, effort=None):
         if not account:
             raise CodexError("Connect your ChatGPT account in Accounts before sending a task")
         settings = load_preferences()
+        if context_files:
+            files = []
+            for value in context_files:
+                path = Path(value).expanduser()
+                path = (path if path.is_absolute() else Path(settings.workspace) / path).resolve()
+                if not path.is_relative_to(Path(settings.workspace)) or not path.is_file():
+                    raise CodexError("Attached context must be an existing file inside the selected workspace")
+                files.append(str(path.relative_to(settings.workspace)))
+            message += "\n\nAttached workspace files (read these for context):\n" + "\n".join("- " + name for name in files)
         chosen_model = model or settings.codex_model
         chosen_effort = effort or settings.reasoning_effort
         catalog = await bridge.models()
@@ -72,7 +82,8 @@ async def stream_chat(message, conversation_id, model=None, effort=None):
         sandbox = "read-only" if settings.access_mode == "read-only" else "workspace-write"
         thread_params = {"cwd": settings.workspace, "model": chosen_model,
                          "approvalPolicy": "untrusted", "sandbox": sandbox,
-                         "config": {"model_provider": "openai", "web_search": "disabled"},
+                         "modelProvider": "openai", "approvalsReviewer": "user",
+                         "config": {"web_search": settings.web_search},
                          "developerInstructions": "You are Asrār, a local coding assistant powered by Codex. "
                          "Explain your work clearly, respect the selected workspace, and verify edits when appropriate.\n" + settings.instructions}
         if existing:

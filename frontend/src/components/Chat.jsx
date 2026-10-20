@@ -1,9 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import ModelBadge from "./ModelBadge";
 import Markdown from "./Markdown";
-import { apiFetch as fetch, api } from "../api";
-
-const API = "http://127.0.0.1:8000";
+import { apiFetch as fetch, api, API } from "../api";
 
 function ToolCall({ name, args, result, success }) {
   const [open, setOpen] = useState(false);
@@ -227,6 +225,11 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
   const [plan, setPlan]           = useState([]); // current step-by-step plan (update_plan tool)
   const [pendingApprovals, setPendingApprovals] = useState([]);
   const [decisionBusy, setDecisionBusy] = useState(false);
+  const [contextFiles, setContextFiles] = useState([]);
+  const [contextPath, setContextPath] = useState("");
+  const [showContextInput, setShowContextInput] = useState(false);
+  const [awayFromBottom, setAwayFromBottom] = useState(false);
+  const stickToBottom = useRef(true);
   const [search, setSearch] = useState("");
   const [chatRuntime, setChatRuntime] = useState(null);
   const [lastPrompt, setLastPrompt] = useState("");
@@ -240,7 +243,7 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
   const conversationIdRef = useRef(null); // mirrors conversationId for use inside the stream loop
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (stickToBottom.current) bottomRef.current?.scrollIntoView({ behavior: "auto" });
   }, [messages]);
 
   useEffect(() => {
@@ -276,6 +279,8 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
       const d = await r.json();
       const conv = d.conversation;
       setChatRuntime(conv.runtime || "api");
+      stickToBottom.current = true;
+      setContextFiles([]);
       setPendingApprovals([]);
       setStatusError("");
       const mapped = (conv.messages || []).map(m => ({
@@ -305,6 +310,8 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
     setPendingApprovals([]);
     setStatusError("");
     setInput("");
+    setContextFiles([]);
+    stickToBottom.current = true;
   }
 
   async function deleteConversation(id, e) {
@@ -329,10 +336,12 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
     setLastPrompt(text);
     setStatusError("");
     turnRuntime.current = runtime;
+    stickToBottom.current = true;
+    const attached = runtime === "codex" ? contextFiles : [];
 
     setPendingApprovals([]);
 
-    const userMsg = { role: "user", content: text, time: now() };
+    const userMsg = { role: "user", content: text + (attached.length ? "\n\nContext: " + attached.join(", ") : ""), time: now() };
 
     setMessages(prev => {
       const next = [...prev, userMsg];
@@ -368,6 +377,7 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
           runtime,
           codex_model: preferences?.codex_model || null,
           reasoning_effort: preferences?.reasoning_effort || null,
+          context_files: attached,
         }),
         signal: controller.signal,
       });
@@ -499,6 +509,7 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
 
           } else if (chunk.done) {
             receivedDone = true;
+            setContextFiles([]);
             if (turnRuntime.current === "codex") setPendingApprovals([]);
             // Stream complete — fold any final metadata from the done event
             updateAssistant(m => ({
@@ -625,6 +636,22 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
     e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
   }
 
+  async function addContext() {
+    if (window.asrar?.chooseContextFiles) {
+      try {
+        const files = await window.asrar.chooseContextFiles();
+        setContextFiles(previous => [...new Set([...previous, ...files])].slice(0, 8));
+      } catch (e) { setStatusError(e.message); }
+    } else setShowContextInput(previous => !previous);
+  }
+
+  function exportConversation() {
+    const content = messages.map(message => `## ${message.role === "user" ? "You" : "Asrār"}\n\n${message.content}`).join("\n\n---\n\n");
+    const url = URL.createObjectURL(new Blob([content], { type: "text/markdown;charset=utf-8" }));
+    const link = document.createElement("a"); link.href = url; link.download = `asrar-${conversationId || "chat"}.md`; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
   return (
     <div className="chat-with-rail">
       {/* Conversation rail — persisted chats, backed by SQLite */}
@@ -657,10 +684,15 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
       </div>
 
       <div className="chat-container">
+        {messages.length > 0 && <div className="conversation-actions"><button disabled={loading} onClick={exportConversation}>Export chat ↓</button><span>{chatRuntime === "codex" ? "ChatGPT subscription" : chatRuntime === "api" ? "API conversation" : ""}</span></div>}
         <div className="mobile-new-chat"><button className="secondary-btn" disabled={loading} onClick={newChat}>+ New chat</button></div>
         <PlanPanel items={plan} />
         {runtimeMismatch && <div className="notice">This chat uses {chatRuntime === "codex" ? "your ChatGPT subscription" : "an API provider"}. Switch back to that connection or start a new chat.</div>}
-        <div className="chat-messages">
+        <div className="chat-messages" onScroll={event => {
+          const element = event.currentTarget;
+          const near = element.scrollHeight - element.scrollTop - element.clientHeight < 100;
+          stickToBottom.current = near; setAwayFromBottom(!near);
+        }}>
           {messages.length === 0 ? (
             <div className="chat-empty">
               <div className="chat-empty-glyph">◈</div>
@@ -676,13 +708,16 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
           )}
           <div ref={bottomRef} />
         </div>
+        {awayFromBottom && <button className="jump-latest" onClick={() => { stickToBottom.current = true; bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }}>Jump to latest ↓</button>}
 
         {pendingApprovals[0]?.questions
           ? <QuestionBanner key={pendingApprovals[0].action_id} pending={pendingApprovals[0]} onAnswer={answerQuestions} busy={decisionBusy} />
           : <ApprovalBanner pending={pendingApprovals[0]} onDecide={handleApprovalDecision} busy={decisionBusy} />}
-        {statusError && !loading && <div className="chat-error" role="alert"><span>{statusError}</span>{lastPrompt && <button onClick={() => { setInput(lastPrompt); setStatusError(""); }}>Edit & retry prompt</button>}</div>}
+        {statusError && (!loading || pendingApprovals.length > 0) && <div className="chat-error" role="alert"><span>{statusError}</span>{lastPrompt && !loading && <button onClick={() => { setInput(lastPrompt); setStatusError(""); }}>Edit & retry prompt</button>}</div>}
 
         <div className="chat-input-area">
+          {runtime === "codex" && contextFiles.length > 0 && <div className="context-files">{contextFiles.map(file => <span key={file} title={file}>{file.split(/[\\/]/).pop()}<button aria-label={`Remove ${file}`} disabled={loading} onClick={() => setContextFiles(previous => previous.filter(value => value !== file))}>✕</button></span>)}</div>}
+          {showContextInput && runtime === "codex" && <div className="context-input"><input aria-label="Workspace file path" placeholder="Path relative to your workspace" value={contextPath} onChange={e => setContextPath(e.target.value)} /><button className="secondary-btn" disabled={!contextPath.trim() || loading || contextFiles.length >= 8} onClick={() => { setContextFiles(previous => [...new Set([...previous, contextPath.trim()])].slice(0, 8)); setContextPath(""); setShowContextInput(false); }}>Add file</button></div>}
           <div className="chat-input-row">
             <textarea
               className="chat-textarea"
@@ -702,6 +737,7 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
             </div>
           </div>
           <div className="input-hint">
+            {runtime === "codex" && <button className="attach-button" disabled={loading || contextFiles.length >= 8 || runtimeMismatch} onClick={addContext}>+ Add workspace file</button>}
             {preferences?.enter_to_send ? "Enter to send · Shift+Enter for new line" : "Ctrl/Cmd+Enter to send"}{loading ? " · Stop cancels the running task" : ""}
             <span>{runtime === "codex" ? "Codex · subscription" : "API · provider billing"}</span>
           </div>
