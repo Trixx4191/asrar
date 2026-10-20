@@ -17,6 +17,9 @@ Model setup, chat registration, and key troubleshooting: [`MODEL_CONNECTIONS.md`
 
 | Capability | |
 |---|---|
+| ChatGPT subscription sign-in | Connect through the official Codex App Server with browser or device-code sign-in; no API key required for Codex tasks |
+| Workspace controls | Choose a folder, read-only or workspace-write access, network permissions, and custom instructions |
+| Account and model controls | Discover available Codex models and reasoning efforts, view subscription usage, reconnect, or switch accounts |
 | Multi-model routing | Routes locally by default, honors manual selection, and falls back after provider failures |
 | Agentic tool loop | Reads/writes files, greps the codebase, runs shell commands, browses the web, up to 10 iterations per turn |
 | Self-verification | Runs the project's tests (or a quick script check) after code edits, before saying a task is done |
@@ -34,7 +37,7 @@ Model setup, chat registration, and key troubleshooting: [`MODEL_CONNECTIONS.md`
 
 - Python 3.11+
 - Node.js 18+ (for the Electron/React frontend)
-- At least one provider API key (see below) — the free tier covers most of it
+- A ChatGPT account eligible for Codex, or a provider API key for optional API mode
 
 ## Setup
 
@@ -48,6 +51,18 @@ pip install -r requirements.txt   #  use a venv
 cd frontend
 npm install
 ```
+
+The frontend dependencies include the official Codex CLI. After starting Asrār,
+open **Accounts → Sign in with ChatGPT**, finish sign-in in your browser, then
+choose **Use in chat**. Device-code sign-in is also available if your account
+permits it. Your existing VS Code sign-in remains separate.
+
+The default connection is **ChatGPT subscription**, with read-only workspace
+access. Choose a workspace and access mode in **Settings**. Available models
+and reasoning efforts come from the connected account. API providers remain
+an explicit, separately billed mode; subscription tasks never fall back to them.
+
+See [subscription setup and v0.14 validation](UPGRADE_NOTES_v0.14.md).
 
 **Workflow skills**
 
@@ -65,7 +80,7 @@ call. Otherwise the model chooses whether to call `use_skill`.
 All 13 bundled skills are adapted for Asrār’s tools. GitHub workflows use an
 installed authenticated `gh` CLI; they do not assume Codex or Copilot APIs.
 
-**API keys** — create a `.env` file in the project root:
+**Optional API mode** — create a `.env` file in the project root:
 ```bash
 ANTHROPIC_API_KEY=...
 GROQ_API_KEY=...

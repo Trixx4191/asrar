@@ -7,7 +7,7 @@ from core.codex_bridge import bridge, CodexError
 from core.preferences import load_preferences, save_preferences
 
 
-def desktop_client(x_asrar_client: str | None = Header(default=None)):
+async def desktop_client(x_asrar_client: str | None = Header(default=None)):
     # A custom header forces browser preflight; foreign origins cannot submit
     # account/approval mutations using cross-site forms or simple requests.
     if x_asrar_client != "desktop-v1":
@@ -31,6 +31,13 @@ class DecisionRequest(BaseModel):
 
 class StopRequest(BaseModel):
     conversation_id: str
+
+
+class AnswerRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    conversation_id: str
+    action_id: str
+    answers: dict[str, str]
 
 
 async def call(operation):
@@ -93,6 +100,12 @@ async def approve(req: DecisionRequest):
 @router.post("/codex/stop")
 async def stop(req: StopRequest):
     await call(bridge.interrupt(req.conversation_id))
+    return {"success": True}
+
+
+@router.post("/codex/answer")
+async def answer(req: AnswerRequest):
+    await call(bridge.answer(req.conversation_id, req.action_id, req.answers))
     return {"success": True}
 
 

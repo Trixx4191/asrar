@@ -184,3 +184,28 @@ progress::-moz-progress-bar { background: var(--accent); }
   .connection-card-top { gap: 10px; }
   .connection-status { margin-left: 0; }
 }
+.markdown-paragraph { margin-bottom: 14px; }
+.markdown h2, .markdown h3, .markdown h4, .markdown h5 { font-weight: 550; line-height: 1.5; margin: 20px 0 10px; }
+.markdown h2 { font-size: 21px; }.markdown h3 { font-size: 17px; }.markdown h4 { font-size: 14px; }
+.markdown ul, .markdown ol { padding-left: 22px; margin: 12px 0 18px; }
+.markdown li { margin: 6px 0; }
+.markdown a { color: var(--accent); text-underline-offset: 3px; }
+.markdown code { font-family: var(--font-mono); font-size: .9em; background: var(--bg-raised); padding: 2px 5px; border-radius: 4px; }
+.markdown pre code { padding: 0; background: transparent; }
+.markdown blockquote { padding-left: 14px; border-left: 2px solid var(--accent); color: var(--text-secondary); margin: 12px 0; }
+.code-block { margin: 16px 0; border: 1px solid var(--border-soft); border-radius: 9px; overflow: hidden; background: var(--bg-surface); }
+.code-block-bar { display: flex; justify-content: space-between; align-items: center; background: var(--bg-raised); padding: 8px 13px; color: var(--text-muted); font-size: 10px; }
+.code-block-bar button { font-size: 10px; color: var(--text-secondary); }
+.code-block pre { border: 0; border-radius: 0; margin: 0; }
+.markdown-table { overflow-x: auto; margin: 15px 0; }
+.markdown table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.markdown th, .markdown td { border: 1px solid var(--border-soft); padding: 9px 12px; text-align: left; }
+.markdown th { background: var(--bg-raised); font-weight: 550; }
+.mobile-new-chat { display: none; }
+@media (max-width: 570px) { .mobile-new-chat { display: block; } }
+.question-options { display: flex; flex-direction: column; gap: 8px; margin: 12px 0 20px; }
+.question-options .secondary-btn { text-align: left; }
+.question-options .selected { border-color: var(--accent); background: var(--accent-soft); }
+.question-options small { display: block; color: var(--text-muted); margin-top: 5px; font-size: 10px; }
+.approval-banner { max-height: 55vh; overflow-y: auto; }
+.mobile-new-chat { padding: 10px 16px 0; }

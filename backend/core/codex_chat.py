@@ -83,7 +83,7 @@ async def stream_chat(message, conversation_id, model=None, effort=None):
             thread_id = result["thread"]["id"]
             save_session(conversation_id, thread_id, settings.workspace, scope)
         active["thread_id"] = thread_id
-        queue = asyncio.Queue()
+        queue = asyncio.Queue(maxsize=256)
         bridge.listeners[thread_id] = queue
         policy = {"type": "readOnly"} if sandbox == "read-only" else {
             "type": "workspaceWrite", "writableRoots": [settings.workspace], "networkAccess": settings.network_access}
@@ -128,8 +128,11 @@ async def stream_chat(message, conversation_id, model=None, effort=None):
                        "command": data.get("command") or data.get("reason") or "Approve file changes",
                        "reason": data.get("reason"), "cwd": data.get("cwd"),
                        "network": data.get("networkApprovalContext")}
+            elif method == "item/tool/requestUserInput":
+                yield {"question_required": True, "action_id": data["approvalId"],
+                       "questions": data.get("questions", [])}
             elif method == "serverRequest/resolved":
-                yield {"approval_resolved": True}
+                yield {"approval_resolved": True, "action_id": data.get("approvalId")}
             elif method in {"item/started", "item/completed"}:
                 item = data.get("item", {})
                 kind, identifier = item.get("type"), item.get("id")

@@ -44,6 +44,7 @@ class CodexBridge:
         self.process = None
         self._start_lock = asyncio.Lock()
         self._write_lock = asyncio.Lock()
+        self._auth_lock = asyncio.Lock()
         self._reader_task = None
         self._stderr_task = None
         self._sequence = 0
@@ -130,7 +131,7 @@ class CodexBridge:
                 if not future.done():
                     future.set_exception(error)
             for queue in list(self.listeners.values()):
-                queue.put_nowait({"method": "asrar/disconnected", "params": {}})
+                self.deliver(queue, {"method": "asrar/disconnected", "params": {}})
             self.approvals.clear()
             self.login = None
 
@@ -157,22 +158,37 @@ class CodexBridge:
         if "id" in message:
             # Never accept a server request automatically. Only these two
             # documented approval types can be accepted via the human UI.
-            if queue and method in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval"}:
+            if queue and method in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/tool/requestUserInput"}:
                 ticket = uuid.uuid4().hex
                 self.approvals[ticket] = {"rpc_id": message["id"], "thread_id": thread_id,
-                                          "turn_id": params.get("turnId"), "method": method}
+                                          "turn_id": params.get("turnId"), "method": method,
+                                          "questions": params.get("questions", []), "answered": False}
                 params = {**params, "approvalId": ticket}
             else:
                 await self._send({"id": message["id"], "error": {"code": -32601, "message": "This client does not support this request"}})
                 if queue:
-                    queue.put_nowait({"method": "asrar/notice", "params": {"message": "Codex requested an unsupported interaction. It was declined."}})
+                    self.deliver(queue, {"method": "asrar/notice", "params": {"message": "Codex requested an unsupported interaction. It was declined."}})
                 return
         if method == "serverRequest/resolved":
             for ticket, approval in list(self.approvals.items()):
                 if approval["rpc_id"] == params.get("requestId"):
+                    params = {**params, "approvalId": ticket}
                     self.approvals.pop(ticket, None)
+        if method == "turn/started":
+            for active in self.active.values():
+                if active.get("thread_id") == thread_id:
+                    active["turn_id"] = params.get("turn", {}).get("id")
         if queue:
-            queue.put_nowait({"method": method, "params": params})
+            self.deliver(queue, {"method": method, "params": params})
+
+    @staticmethod
+    def deliver(queue, event):
+        if queue.full():
+            while not queue.empty():
+                queue.get_nowait()
+            queue.put_nowait({"method": "asrar/disconnected", "params": {}})
+        else:
+            queue.put_nowait(event)
 
     async def account(self):
         result = await self.request("account/read", {"refreshToken": False})
@@ -193,6 +209,10 @@ class CodexBridge:
             return {"installed": True, "connected": False, "account": None, "message": redact_secrets(str(exc))}
 
     async def begin_login(self, device=False):
+        async with self._auth_lock:
+            return await self._begin_login(device)
+
+    async def _begin_login(self, device=False):
         if self.active:
             raise CodexError("Stop running tasks before switching accounts")
         if self.login:
@@ -227,13 +247,29 @@ class CodexBridge:
         return models
 
     async def decide(self, conversation_id, ticket, approved):
+        approval = self._scoped_request(conversation_id, ticket)
+        if approval["method"] not in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval"}:
+            raise CodexError("This request needs an answer, not an approval")
+        approval["answered"] = True
+        await self._send({"id": approval["rpc_id"], "result": {"decision": "accept" if approved else "decline"}})
+
+    def _scoped_request(self, conversation_id, ticket):
         approval = self.approvals.get(ticket)
         active = self.active.get(conversation_id)
-        if (not approval or not active or approval["thread_id"] != active.get("thread_id")
+        if (not approval or approval.get("answered") or not active or approval["thread_id"] != active.get("thread_id")
                 or approval["turn_id"] != active.get("turn_id")):
             raise CodexError("This approval has expired or belongs to another conversation")
-        self.approvals.pop(ticket)
-        await self._send({"id": approval["rpc_id"], "result": {"decision": "accept" if approved else "decline"}})
+        return approval
+
+    async def answer(self, conversation_id, ticket, answers):
+        request = self._scoped_request(conversation_id, ticket)
+        if request["method"] != "item/tool/requestUserInput":
+            raise CodexError("This request needs an approval decision")
+        expected = {q["id"] for q in request["questions"]}
+        if set(answers) != expected or any(not isinstance(answer, str) or not answer.strip() or len(answer) > 4000 for answer in answers.values()):
+            raise CodexError("Answer every question before continuing")
+        request["answered"] = True
+        await self._send({"id": request["rpc_id"], "result": {"answers": {key: {"answers": [value]} for key, value in answers.items()}}})
 
     async def interrupt(self, conversation_id):
         active = self.active.get(conversation_id)

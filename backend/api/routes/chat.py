@@ -5,7 +5,7 @@ POST /chat/stream — SSE streaming via shared run_task_stream (no duplicated lo
 POST /chat/approve — human-gated destructive command approval
 """
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Header
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Literal
@@ -137,9 +137,11 @@ async def approve_action(req: ApprovalRequest):
 
 
 @router.post("/stream")
-async def chat_stream(req: ChatRequest):
+async def chat_stream(req: ChatRequest, x_asrar_client: str | None = Header(default=None)):
     """SSE streaming — thin wrapper around shared run_task_stream."""
     check_conversation(req.conversation_id, req.runtime)
+    if req.runtime == "codex" and x_asrar_client != "desktop-v1":
+        raise HTTPException(403, "Use the Asrār desktop client")
 
     async def generator():
         conversation_id = req.conversation_id or memory.create_conversation(
