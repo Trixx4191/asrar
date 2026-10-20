@@ -36,28 +36,18 @@ def load_registry() -> dict:
 
 
 def get_available_models(registry: dict) -> set[str]:
-    provider_key_map = {
-        "anthropic": "ANTHROPIC_API_KEY",
-        "google": "GOOGLE_API_KEY",
-        "groq": "GROQ_API_KEY",
-        "deepseek": "DEEPSEEK_API_KEY",
-        "mistral": "MISTRAL_API_KEY",
-        "openrouter": "OPENROUTER_API_KEY",
-        "qwen": "QWEN_API_KEY",
-        "kimi": "KIMI_API_KEY",
-    }
-
+    from providers.configuration import connection_config, setting
     available: set[str] = set()
     for key, model in registry["models"].items():
         if not model.get("enabled", True):
             continue
-        provider = (model.get("provider") or "").lower()
-        env_key = provider_key_map.get(provider)
-        if env_key:
-            if os.getenv(env_key):
-                available.add(key)
-        else:
+        try:
+            config = connection_config(model.get("provider", ""), model)
+        except ValueError:
+            continue
+        if config["local"] or setting(config["api_key_env"]).strip():
             available.add(key)
+
     return available
 
 

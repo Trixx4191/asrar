@@ -125,16 +125,6 @@ class GoogleProvider(BaseProvider):
             return ProviderResponse(
                 content=text, model_id=model_id, provider=self.name, tool_calls=tool_calls
             )
-        except httpx.HTTPStatusError as e:
-            status = getattr(getattr(e, "response", None), "status_code", "?")
-            try:
-                preview = e.response.text[:200]
-            except Exception:
-                preview = "(unable to read)"
-            return ProviderResponse(
-                content="", model_id=model_id, provider=self.name,
-                success=False, error=f"Provider HTTP {status}: {preview}",
-            )
         except Exception as e:
             return ProviderResponse(
                 content="", model_id=model_id, provider=self.name, success=False, error=provider_error(e)

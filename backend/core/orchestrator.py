@@ -204,7 +204,7 @@ READ_ONLY_TOOLS = {
     "git_status", "git_diff", "git_log",
     "list_processes", "inspect_process",
     "semantic_search",
-    "list_skills", "use_skill",
+    "list_skills", "use_skill", "list_models",
 }
 
 

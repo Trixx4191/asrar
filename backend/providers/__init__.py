@@ -1,11 +1,9 @@
 """Providers package initializer.
-Provides a `get_provider(name)` factory and caches provider instances.
+Provides a factory honoring current credentials and per-model connections.
 """
-from typing import Dict
 
 from .base import BaseProvider
 
-_INSTANCES: Dict[str, BaseProvider] = {}
 
 
 def _load_provider_map():
@@ -51,22 +49,46 @@ def _load_provider_map():
     return provs
 
 
-def get_provider(name: str) -> BaseProvider:
-    """Return a provider instance by name. Returns a BaseProvider with the
-    configured API key state; callers should call `is_available()` before use.
+_fingerprints = {}
+
+
+def get_provider(name: str, *, model: dict | None = None) -> BaseProvider:
+    """Create a connection from current credentials and per-model settings.
+
+    Provider construction is cheap. Avoid caching instances holding stale keys
+    or accidentally sharing one endpoint across different model deployments.
     """
-    name = (name or "").lower()
-    if name in _INSTANCES:
-        return _INSTANCES[name]
-
-    prov_map = _load_provider_map()
-    cls = prov_map.get(name)
-    if cls is None:
-        raise ValueError(f"Unknown provider: {name}")
-
-    inst = cls()
-    _INSTANCES[name] = inst
-    return inst
+    import hashlib
+    from .configuration import connection_config, setting
+    from .compatible import CompatibleProvider
+    name = (name or "").strip().lower()
+    config = connection_config(name, model)
+    protocol = config["protocol"]
+    if protocol == "anthropic":
+        from .anthropic import AnthropicProvider
+        cls = AnthropicProvider
+    elif protocol == "google":
+        from .google import GoogleProvider
+        cls = GoogleProvider
+    else:
+        from .configuration import PROVIDER_DEFAULTS
+        cls = (_load_provider_map().get(name, CompatibleProvider)
+               if PROVIDER_DEFAULTS.get(name, {}).get("protocol") == protocol and not config["local"]
+               else CompatibleProvider)
+    instance = cls()
+    instance.name = name
+    instance.base_url = config["api_base"]
+    instance.api_key = setting(config["api_key_env"]).strip()
+    instance.local = config["local"]
+    instance.api_key_env = config["api_key_env"]
+    identity = (name, instance.base_url, instance.api_key_env)
+    fingerprint = hashlib.sha256(instance.api_key.encode()).digest()
+    previous = _fingerprints.get(identity)
+    if previous is not None and previous != fingerprint:
+        from core.orchestrator import reset_circuit
+        reset_circuit(name)
+    _fingerprints[identity] = fingerprint
+    return instance
 
 
 __all__ = ["get_provider"]
