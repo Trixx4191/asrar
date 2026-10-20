@@ -276,7 +276,7 @@ async def _fetch_openrouter_info(model_id: str) -> dict | None:
 async def lookup_and_register_model(name_or_url: str, *, provider: str | None = None,
                                     key: str | None = None, api_base: str | None = None,
                                     protocol: str | None = None, api_key_env: str | None = None,
-                                    strengths: list[str] | None = None, priority: int = 2,
+                                    strengths: list[str] | None = None, priority: int | None = None,
                                     validate: bool = True) -> dict:
     model_id = _extract_model_id(name_or_url)
     provider = _normalize_provider(provider) or _detect_provider(model_id) or "openrouter"
@@ -303,11 +303,15 @@ async def lookup_and_register_model(name_or_url: str, *, provider: str | None = 
         existing = load_registry()["models"].get(model_key)
     if existing:
         if (existing["id"] != model_id or existing["provider"] != provider
-                or (strengths is not None and existing.get("strengths") != strengths)
                 or any(value is not None and existing.get(field) != value
                        for field, value in (("api_base", api_base), ("protocol", protocol), ("api_key_env", api_key_env)))):
             raise ValueError("This model key has different configuration; use configure_model")
-        entry = {"key": model_key, **existing}
+        routing_changes = {}
+        if strengths is not None and strengths != existing.get("strengths"):
+            routing_changes["strengths"] = strengths
+        if priority is not None and priority != existing.get("priority", 2):
+            routing_changes["priority"] = priority
+        entry = configure_model(model_key, **routing_changes) if routing_changes else {"key": model_key, **existing}
     else:
         entry = add_model(
             key=model_key, model_id=model_id, provider=provider,
@@ -316,7 +320,7 @@ async def lookup_and_register_model(name_or_url: str, *, provider: str | None = 
             context_window=(info or {}).get("context_length") or 32000,
             api_base=api_base, protocol=protocol, api_key_env=api_key_env,
             free=bool(info and str(info.get("pricing", {}).get("prompt")) == "0"
-                      and str(info.get("pricing", {}).get("completion")) == "0"), priority=priority,
+                      and str(info.get("pricing", {}).get("completion")) == "0"), priority=priority if priority is not None else 2,
         )
     if validate:
         entry["validation"] = await test_model(model_key)

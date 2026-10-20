@@ -118,6 +118,15 @@ class ModelRegistrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(entry["key"], "my-existing-alias")
         self.assertEqual(len(registry.list_models()), 1)
 
+    async def test_readding_existing_model_applies_requested_routing_without_resetting_priority(self):
+        self.add(key="alias", model_id="claude-example", provider="anthropic", protocol="anthropic",
+                 api_base="https://api.anthropic.com/v1", priority=7)
+        entry = await registry.lookup_and_register_model("claude-example", strengths=["fast_chat"], validate=False)
+        self.assertEqual(entry["key"], "alias")
+        self.assertEqual(entry["priority"], 7)
+        self.assertEqual(entry["strengths"], ["fast_chat"])
+        self.assertEqual(registry.load_registry()["task_model_map"]["fast_chat"], ["alias"])
+
     async def test_key_change_marks_previous_validation_stale(self):
         self.add()
         with registry._REGISTRY_LOCK:

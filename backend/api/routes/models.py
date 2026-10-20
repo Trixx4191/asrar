@@ -46,7 +46,7 @@ class LookupRequest(ModelRequest):
     protocol: str | None = None
     api_key_env: str | None = None
     strengths: list[str] | None = None
-    priority: int = 2
+    priority: int | None = None
     validate_connection: bool = Field(default=True, alias="validate")
 
 
