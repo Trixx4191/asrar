@@ -181,6 +181,7 @@
       "deepseek-coder"
     ],
     "document_work": [
+      "groq-code",
       "claude-haiku",
       "gemini-flash"
     ],
@@ -201,6 +202,7 @@
       "claude-haiku"
     ],
     "summarization": [
+      "groq-fast",
       "claude-haiku",
       "mistral-small"
     ],

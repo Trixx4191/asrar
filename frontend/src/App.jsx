@@ -101,7 +101,7 @@ export default function App() {
 
           <div className="sidebar-footer">
             <div style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-              v0.12.0
+              v0.13.0
             </div>
           </div>
         </div>

@@ -84,6 +84,18 @@ class FastRoutingTest(unittest.IsolatedAsyncioTestCase):
 
 
 class SkillContextTest(unittest.TestCase):
+    def test_agent_can_read_react_source(self):
+        from tools.files import read_file
+        result = read_file(str(ROOT / "frontend/src/App.jsx"))
+        self.assertTrue(result.success)
+        self.assertIn("function App", result.content)
+
+    def test_repository_verification_uses_its_installed_test_framework(self):
+        from tools.testing import detect_test_command
+        framework, command = detect_test_command(str(ROOT))
+        self.assertEqual(framework, "unittest")
+        self.assertIn("unittest discover", command)
+
     def test_descriptions_are_available_without_loading_all_bodies(self):
         context, loaded = skills.prompt_context("hello")
         self.assertIn("code-review:", context)

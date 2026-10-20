@@ -21,7 +21,7 @@ from core import memory
 
 memory.init_db()
 
-app = FastAPI(title="Asrār Agent API", version="0.1.0")
+app = FastAPI(title="Asrār Agent API", version="0.13.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -40,7 +40,7 @@ app.include_router(skills.router, prefix="/skills", tags=["skills"])
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "agent": "Asrār", "version": "0.1.0"}
+    return {"status": "ok", "agent": "Asrār", "version": "0.13.0"}
 
 
 @app.get("/health")

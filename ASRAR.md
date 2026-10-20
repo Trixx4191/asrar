@@ -9,7 +9,7 @@
 
 ```
 name        = Asrār
-version     = 0.1.0
+version     = 0.13.0
 tagline     = The agent that works in the shadows, so you don't have to
 language    = en
 personality = direct, calm, efficient — speaks plainly, never over-explains
@@ -169,6 +169,7 @@ asrar/
 
 | Version | Date       | Notes                              |
 |---------|------------|------------------------------------|
+| 0.13.0 | 2026-10-20 | Asrār-native skills with prompt discovery and explicit invocation; local-first routing; current Groq model IDs; shared provider dispatch; preserved native tool history and Gemini signatures; bounded streams, timing events, trusted approvals, and incomplete-work reporting. See UPGRADE_NOTES_v0.13.md. |
 | 0.1.0   | 2026-06-12 | Phase 1: classifier, router, registry |
 | 0.2.0   | 2026-06-16 | Persistent multi-conversation memory (SQLite); agent now asks for project details before creating files instead of generating empty scaffolds |
 | 0.3.0   | 2026-06-16 | Supervisor layer: sticky routing keeps a conversation on the same model while a clarifying question is open (fixes mid-task reclassification), plus an execution_log table for auditing every routing decision |
