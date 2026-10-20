@@ -22,6 +22,7 @@ class Preferences(BaseModel):
     reasoning_effort: str | None = Field(default=None, max_length=30)
     access_mode: Literal["read-only", "workspace-write"] = "read-only"
     network_access: bool = False
+    web_search: Literal["disabled", "cached", "live"] = "disabled"
     instructions: str = Field(default="", max_length=12000)
     show_activity: bool = True
     enter_to_send: bool = True

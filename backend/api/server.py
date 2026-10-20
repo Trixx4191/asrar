@@ -42,7 +42,7 @@ async def local_client_only(request: Request, call_next):
     if host not in {"localhost", "127.0.0.1", "::1", "testserver"}:
         return JSONResponse({"detail": "Asrār accepts local hostnames only"}, status_code=403)
     origin = request.headers.get("origin")
-    if origin and origin not in TRUSTED_ORIGINS:
+    if origin and origin not in TRUSTED_ORIGINS and origin != str(request.base_url).rstrip("/"):
         return JSONResponse({"detail": "Untrusted desktop origin"}, status_code=403)
     return await call_next(request)
 

@@ -31,6 +31,7 @@ class ChatRequest(BaseModel):
     runtime: Literal["api", "codex"] = "api"
     codex_model: str | None = None
     reasoning_effort: str | None = None
+    context_files: list[str] = Field(default_factory=list, max_length=8)
 
 
 def check_conversation(conversation_id, runtime):
@@ -151,7 +152,7 @@ async def chat_stream(req: ChatRequest, x_asrar_client: str | None = Header(defa
 
         if req.runtime == "codex":
             from core.codex_chat import stream_chat
-            async for event in stream_chat(req.message, conversation_id, req.codex_model, req.reasoning_effort):
+            async for event in stream_chat(req.message, conversation_id, req.codex_model, req.reasoning_effort, req.context_files):
                 yield f"data: {json.dumps(event)}\n\n"
             return
 

@@ -209,3 +209,12 @@ progress::-moz-progress-bar { background: var(--accent); }
 .question-options small { display: block; color: var(--text-muted); margin-top: 5px; font-size: 10px; }
 .approval-banner { max-height: 55vh; overflow-y: auto; }
 .mobile-new-chat { padding: 10px 16px 0; }
+.conversation-actions { display: flex; justify-content: space-between; padding: 10px 25px 0; font-size: 10px; color: var(--text-muted); }
+.conversation-actions button { font-size: 10px; color: var(--text-secondary); }
+.jump-latest { align-self: center; padding: 8px 15px; background: var(--bg-raised); border: 1px solid var(--border); border-radius: 20px; color: var(--text-secondary); font-size: 11px; }
+.context-files { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 10px; }
+.context-files > span { border: 1px solid var(--border-soft); border-radius: 6px; background: var(--bg-surface); padding: 5px 7px; font-size: 10px; color: var(--text-secondary); }
+.context-files button { font-size: 9px; margin-left: 10px; color: var(--text-muted); }
+.context-input { display: flex; gap: 8px; margin-bottom: 10px; }
+.context-input input { min-width: 0; flex: 1; border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px; font-size: 11px; }
+.attach-button { font-size: 10px; color: var(--text-secondary); }
