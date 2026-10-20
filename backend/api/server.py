@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 load_dotenv(ROOT / ".env")
 
-from api.routes import chat, models, tasks, debug, conversations
+from api.routes import chat, models, tasks, debug, conversations, skills
 from core import memory
 
 memory.init_db()
@@ -35,6 +35,7 @@ app.include_router(models.router,        prefix="/models",        tags=["models"
 app.include_router(tasks.router,         prefix="/tasks",         tags=["tasks"])
 app.include_router(debug.router,         prefix="/debug",         tags=["debug"])
 app.include_router(conversations.router, prefix="/conversations", tags=["conversations"])
+app.include_router(skills.router, prefix="/skills", tags=["skills"])
 
 
 @app.get("/")

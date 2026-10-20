@@ -76,6 +76,11 @@ function Message({ msg }) {
           {msg.routingReason}
         </div>
       )}
+      {msg.skillsLoaded?.length > 0 && <div className="routing-reason">Skills: {msg.skillsLoaded.join(", ")}</div>}
+      {msg.timings && <div className="routing-reason">
+        Routing {Math.round(msg.timings.routing_ms || 0)} ms
+        {msg.timings.time_to_first_token_ms != null && ` · First token ${(msg.timings.time_to_first_token_ms / 1000).toFixed(2)} s`}
+      </div>}
 
       {/* Tool call blocks — shown above the text */}
       {msg.toolCalls?.length > 0 && (
@@ -349,7 +354,12 @@ export default function Chat({ forceModel, models = [], onForceModelChange }) {
               classificationSource: chunk.classification_source || null,
               confidence: typeof chunk.confidence === "number" ? chunk.confidence : null,
               routingReason: chunk.reason || null,
+              skillsLoaded: chunk.skills_loaded || [],
+              timings: { routing_ms: chunk.routing_ms },
             }));
+
+          } else if (chunk.timing) {
+            updateAssistant(m => ({ ...m, timings: chunk }));
 
           } else if (chunk.token) {
             // Streaming text token
@@ -361,6 +371,7 @@ export default function Chat({ forceModel, models = [], onForceModelChange }) {
               ...m,
               nudging: false,
               toolCalls: [...(m.toolCalls || []), {
+                id: chunk.tool_call_id,
                 name: chunk.tool_start,
                 args: chunk.args || {},
                 result: null,
@@ -378,9 +389,10 @@ export default function Chat({ forceModel, models = [], onForceModelChange }) {
             updateAssistant(m => {
               const calls = [...(m.toolCalls || [])];
               // Find the last entry with this tool name that has no result yet
-              const idx = calls.map((c, i) => c.name === chunk.tool_result && !c.result ? i : -1)
-                             .filter(i => i >= 0).pop();
-              if (idx !== undefined) calls[idx] = { ...calls[idx], result: chunk.preview, success: chunk.success };
+              const idx = calls.findIndex(c => chunk.tool_call_id
+                ? c.id === chunk.tool_call_id
+                : c.name === chunk.tool_result && c.result == null);
+              if (idx >= 0) calls[idx] = { ...calls[idx], result: chunk.preview, success: chunk.success };
               return { ...m, toolCalls: calls };
             });
 
@@ -411,6 +423,8 @@ export default function Chat({ forceModel, models = [], onForceModelChange }) {
               ...m,
               streaming: false,
               nudging: false,
+              content: chunk.response ?? m.content,
+              timings: chunk.timings || m.timings,
               model: chunk.model_used
                 ? { display_name: chunk.model_used, provider: m.model?.provider || "auto" }
                 : m.model,

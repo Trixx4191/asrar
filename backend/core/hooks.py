@@ -27,10 +27,29 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core import memory
+
+
+_approved_action: ContextVar[tuple | None] = ContextVar("approved_action", default=None)
+
+
+@contextmanager
+def approved_action(name: str, args: dict):
+    """Server-only capability, set after atomically claiming a stored approval."""
+    token = _approved_action.set((name, {k: v for k, v in args.items() if k != "confirmed"}))
+    try:
+        yield
+    finally:
+        _approved_action.reset(token)
+
+
+def _is_approved(name: str, args: dict) -> bool:
+    return _approved_action.get() == (name, {k: v for k, v in args.items() if k != "confirmed"})
 
 
 @dataclass
@@ -94,11 +113,12 @@ def _gate_destructive_commands(name: str, args: dict, conversation_id: str | Non
     'confirmed' being the model's own self-report after a chat exchange."""
     if name != "run_command":
         return HookResult()
-    if args.get("confirmed"):
+    if _is_approved(name, args):
         return HookResult()
 
     command = (args.get("command") or "")
-    if any(p in command.lower() for p in _CONFIRM_COMMAND_PATTERNS):
+    from tools.shell import check_command
+    if check_command(command)["blocked"] or any(p in command.lower() for p in _CONFIRM_COMMAND_PATTERNS):
         action_id = ""
         if conversation_id:
             action_id = memory.create_pending_action(
@@ -113,7 +133,8 @@ def _gate_destructive_commands(name: str, args: dict, conversation_id: str | Non
             reason=(
                 f"This command needs the user's explicit approval before running:\n\n"
                 f"```bash\n{command}\n```\n\n"
-                f"Ask the user to confirm, then call run_command again with confirmed=true."
+                "Wait for the user to approve this stored action through the UI. "
+                "Setting confirmed=true cannot grant permission."
             ),
         )
     return HookResult()
@@ -175,7 +196,7 @@ def _gate_new_destructive_tools(name: str, args: dict, conversation_id: str | No
     """Package installs, process kills, and git commits need confirmation."""
     if name not in _DESTRUCTIVE_TOOLS:
         return HookResult()
-    if args.get("confirmed"):
+    if _is_approved(name, args):
         return HookResult()
     if not conversation_id:
         return HookResult(

@@ -74,7 +74,7 @@ def decide_route(conversation_id: str, user_input: str, force_model: str | None 
         registry = load_registry()
         pending_model = registry["models"].get(pending_key)
 
-        if pending_model:
+        if pending_model and pending_model.get("enabled", True):
             try:
                 pending_available = get_provider(pending_model["provider"]).is_available()
             except Exception:
@@ -164,14 +164,14 @@ async def decide_route_async(
         pending_key = state.get("pending_model_key")
         registry = load_registry()
         pending_model = registry["models"].get(pending_key)
-        if pending_model:
+        if pending_model and pending_model.get("enabled", True):
             try:
                 pending_available = get_provider(pending_model["provider"]).is_available()
             except Exception:
                 pending_available = False
             if pending_available:
                 decision = RoutingDecision(
-                    task_type=state.get("pending_task_type") or "general",
+                    task_type=state.get("task_type") or "general",
                     selected_model_key=pending_key,
                     selected_model=pending_model,
                     fallback_chain=[],

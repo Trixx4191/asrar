@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 import contextvars
+import time
 from pathlib import Path
 from datetime import datetime
 
@@ -624,6 +625,10 @@ TOOL_SCHEMAS: list[dict] = [
 ]
 
 
+# Permissions are issued by the server after human approval, never by a model.
+for _schema in TOOL_SCHEMAS:
+    _schema["function"]["parameters"].get("properties", {}).pop("confirmed", None)
+
 # ─────────────────────────────────────────────────────────────
 # Tool executor  (clean dispatch — no regex)
 # ─────────────────────────────────────────────────────────────
@@ -661,7 +666,7 @@ async def _dispatch_tool(name: str, args: dict, conversation_id: str | None = No
             )
             if not r.success:
                 return f"Error: {r.error}"
-            if r.diff:
+            if getattr(r, "diff", None):
                 _last_diff_var.set({"path": args["path"], "diff": r.diff})
                 return f"{r.content}\n\n--- diff ---\n{r.diff[:3000]}"
             return r.content
@@ -675,7 +680,7 @@ async def _dispatch_tool(name: str, args: dict, conversation_id: str | None = No
             )
             if not r.success:
                 return f"Error: {r.error}"
-            if r.diff:
+            if getattr(r, "diff", None):
                 _last_diff_var.set({"path": args["path"], "diff": r.diff})
                 return f"{r.content}\n\n--- diff ---\n{r.diff[:3000]}"
             return r.content
@@ -758,6 +763,8 @@ async def _dispatch_tool(name: str, args: dict, conversation_id: str | None = No
             skill = skill_catalog.load_skill(args["name"])
             if not skill:
                 return f"Error: unknown or invalid skill '{args['name']}'. Call list_skills to see available skills."
+            if conversation_id:
+                memory.log_event(conversation_id, "skill_loaded", {"name": skill["name"], "source": "tool"})
             return f"Loaded skill: {skill['name']}\n\n{skill['content']}"
 
         elif name == "run_tests":
@@ -957,7 +964,7 @@ def _track_verification_state(name: str, args: dict, result: str, conversation_i
             if testing.is_code_file(fname):
                 memory.mark_dirty(conversation_id, f"{args.get('name', 'project')}/{fname}")
 
-    elif name in ("run_tests", "execute_code"):
+    elif name in ("run_tests", "execute_code") and not failed:
         memory.mark_verified(conversation_id, {"tool": name, "success": not failed})
 
 
@@ -996,204 +1003,32 @@ def _to_google_tools(schemas: list[dict]) -> list[dict]:
 # Returns (response_text, tool_calls_made)
 # ─────────────────────────────────────────────────────────────
 
-async def _llm_call_with_tools(
-    provider,
-    model_id: str,
-    messages: list[dict],   # raw dicts in OpenAI format
-    system: str,
-    provider_name: str,
-) -> tuple[str, list[dict]]:
-    """
-    Single LLM call. Handles the three API shapes:
-      - OpenAI-compatible (Groq, DeepSeek, OpenRouter, Mistral)
-      - Anthropic
-      - Google
+def _provider_messages(messages: list[dict]) -> list[Message]:
+    # Preserve native content blocks and tool ids across every iteration.
+    return [Message(
+        role=m.get("role", "user"), content=m.get("content") or "",
+        name=m.get("name"), tool_call_id=m.get("tool_call_id"),
+        tool_calls=m.get("tool_calls"),
+    ) for m in messages]
 
-    Returns:
-        (text_content, tool_calls)
-        tool_calls: list of {"name": str, "args": dict, "id": str}
-    """
-    import httpx
 
-    if provider_name == "anthropic":
-        # ── Anthropic format ──────────────────────────────────
-        anth_messages = []
-        for m in messages:
-            role = m["role"]
-            content = m["content"]
-            if role == "tool":
-                # tool result → Anthropic wants role=user, content=[tool_result block]
-                anth_messages.append({
-                    "role": "user",
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": m.get("tool_call_id", ""),
-                        "content": content,
-                    }]
-                })
-            else:
-                anth_messages.append({"role": role, "content": content})
-
-        body = {
-            "model": model_id,
-            "max_tokens": 4096,
-            "system": system,
-            "tools": _to_anthropic_tools(TOOL_SCHEMAS),
-            "messages": anth_messages,
-        }
-        headers = {
-            "x-api-key": provider.api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        }
-        async with httpx.AsyncClient(timeout=90) as client:
-            try:
-                r = await client.post(f"{provider.base_url}/messages", headers=headers, json=body)
-                r.raise_for_status()
-                data = r.json()
-            except httpx.HTTPStatusError as e:
-                status = getattr(getattr(e, "response", None), "status_code", "?")
-                try:
-                    preview = e.response.text[:200]
-                except Exception:
-                    preview = "(unable to read error body)"
-                try:
-                    headers = dict(e.response.headers or {})
-                except Exception:
-                    headers = {}
-                ra = headers.get("retry-after") or headers.get("Retry-After")
-                msg = f"Provider HTTP {status}: {preview}" + (f" (retry-after={ra})" if ra else "")
-                return msg, []
-
-        text = ""
-        tool_calls = []
-        for block in data.get("content", []):
-            if block["type"] == "text":
-                text += block["text"]
-            elif block["type"] == "tool_use":
-                tool_calls.append({
-                    "id": block["id"],
-                    "name": block["name"],
-                    "args": block["input"],
-                })
-        return text, tool_calls
-
-    elif provider_name == "google":
-        # ── Google Gemini format ──────────────────────────────
-        contents = []
-        # Inject system as first user/model exchange
-        contents.append({"role": "user", "parts": [{"text": f"[System]: {system}"}]})
-        contents.append({"role": "model", "parts": [{"text": "Understood."}]})
-
-        for m in messages:
-            role = "model" if m["role"] == "assistant" else "user"
-            content = m["content"]
-            if m["role"] == "tool":
-                contents.append({
-                    "role": "user",
-                    "parts": [{"functionResponse": {
-                        "name": m.get("name", "tool"),
-                        "response": {"result": content},
-                    }}]
-                })
-            else:
-                contents.append({"role": role, "parts": [{"text": content}]})
-
-        body = {
-            "contents": contents,
-            "tools": _to_google_tools(TOOL_SCHEMAS),
-            "generationConfig": {"maxOutputTokens": 4096},
-        }
-        url = f"{provider.base_url}/models/{model_id}:generateContent?key={provider.api_key}"
-        async with httpx.AsyncClient(timeout=90) as client:
-            try:
-                r = await client.post(url, json=body)
-                r.raise_for_status()
-                data = r.json()
-            except httpx.HTTPStatusError as e:
-                status = getattr(getattr(e, "response", None), "status_code", "?")
-                try:
-                    preview = e.response.text[:200]
-                except Exception:
-                    preview = "(unable to read error body)"
-                try:
-                    headers = dict(e.response.headers or {})
-                except Exception:
-                    headers = {}
-                ra = headers.get("retry-after") or headers.get("Retry-After")
-                msg = f"Provider HTTP {status}: {preview}" + (f" (retry-after={ra})" if ra else "")
-                return msg, []
-
-        text = ""
-        tool_calls = []
-        candidate = data.get("candidates", [{}])[0]
-        for part in candidate.get("content", {}).get("parts", []):
-            if "text" in part:
-                text += part["text"]
-            elif "functionCall" in part:
-                fc = part["functionCall"]
-                tool_calls.append({
-                    "id": fc["name"],  # Google has no id; use name
-                    "name": fc["name"],
-                    "args": fc.get("args", {}),
-                })
-        return text, tool_calls
-
-    else:
-        # ── OpenAI-compatible (Groq, DeepSeek, OpenRouter, Mistral) ──
-        all_messages = [{"role": "system", "content": system}] + messages
-
-        headers = {"Authorization": f"Bearer {provider.api_key}", "Content-Type": "application/json"}
-        if hasattr(provider, "headers_extra"):
-            headers.update(provider.headers_extra)
-
-        body = {
-            "model": model_id,
-            "messages": all_messages,
-            "max_tokens": 4096,
-            "tools": TOOL_SCHEMAS,
-            "tool_choice": "auto",
-        }
-
-        api_base = provider.base_url
-        async with httpx.AsyncClient(timeout=90) as client:
-            try:
-                r = await client.post(f"{api_base}/chat/completions", headers=headers, json=body)
-                r.raise_for_status()
-                data = r.json()
-            except httpx.HTTPStatusError as e:
-                status = getattr(getattr(e, "response", None), "status_code", "?")
-                try:
-                    preview = e.response.text[:200]
-                except Exception:
-                    preview = "(unable to read error body)"
-                try:
-                    headers = dict(e.response.headers or {})
-                except Exception:
-                    headers = {}
-                ra = headers.get("retry-after") or headers.get("Retry-After")
-                msg = f"Provider HTTP {status}: {preview}" + (f" (retry-after={ra})" if ra else "")
-                return msg, []
-
-        choice = data["choices"][0]
-        msg = choice["message"]
-        text = msg.get("content") or ""
-        tool_calls = []
-        for tc in msg.get("tool_calls") or []:
-            try:
-                args = json.loads(tc["function"]["arguments"])
-            except (json.JSONDecodeError, KeyError):
-                args = {}
-            tool_calls.append({
-                "id": tc["id"],
-                "name": tc["function"]["name"],
-                "args": args,
-            })
-        return text, tool_calls
+async def _llm_call_with_tools(provider, model_id, messages, system, provider_name):
+    """Use the same provider adapter for buffered and streamed completions."""
+    try:
+        response = await provider.complete(
+            messages=_provider_messages(messages), model_id=model_id,
+            system=system, max_tokens=4096, tools=TOOL_SCHEMAS,
+        )
+    except Exception as exc:
+        return f"Provider error: {type(exc).__name__}", []
+    if not response.success:
+        error = response.error or "empty provider failure"
+        return error if error.startswith("Provider HTTP") else f"Provider error: {error}", []
+    return response.content or "", list(response.tool_calls or [])
 
 
 def _is_provider_error_text(text: str) -> bool:
-    return isinstance(text, str) and text.strip().startswith("Provider HTTP")
+    return orchestrator.is_provider_error(text)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1221,6 +1056,11 @@ async def run_task(
     classification otherwise. Without a conversation_id, this falls back
     to plain per-call routing (e.g. for standalone/CLI use).
     """
+    skill_context, requested_skills = skill_catalog.prompt_context(user_input)
+    system_prompt = SYSTEM_PROMPT + "\n\n" + skill_context
+    if conversation_id:
+        for skill_name in requested_skills:
+            memory.log_event(conversation_id, "skill_loaded", {"name": skill_name, "source": "explicit"})
     history = history or []
 
     # 1. Classify + route (hybrid + sticky when conversation exists)
@@ -1277,7 +1117,7 @@ async def run_task(
 
             def _make(p=prov, mid=model["id"], pn=model["provider"], ms=msgs):
                 async def _call():
-                    return await _llm_call_with_tools(p, mid, ms, SYSTEM_PROMPT, pn)
+                    return await _llm_call_with_tools(p, mid, ms, system_prompt, pn)
                 return _call
             race_fns.append(_make())
             race_meta.append((mk, model))
@@ -1337,7 +1177,7 @@ async def run_task(
                     provider=provider,
                     model_id=model["id"],
                     messages=attempt_messages,
-                    system=SYSTEM_PROMPT,
+                    system=system_prompt,
                     provider_name=model["provider"],
                 ),
                 on_retry=lambda attempt, delay, err: _log({
@@ -1514,6 +1354,13 @@ async def run_task_stream(
       {"done": True, "tool_calls": [...], "response": "..."}
       {"error": "..."}
     """
+    started_at = time.perf_counter()
+    first_token_ms = None
+    skill_context, requested_skills = skill_catalog.prompt_context(user_input)
+    system_prompt = SYSTEM_PROMPT + "\n\n" + skill_context
+    if conversation_id:
+        for skill_name in requested_skills:
+            memory.log_event(conversation_id, "skill_loaded", {"name": skill_name, "source": "explicit"})
     history = history or []
     hist_dicts = []
     for m in history:
@@ -1540,6 +1387,7 @@ async def run_task_stream(
         yield {"error": f"Routing failed: {e}"}
         return
 
+    routing_ms = round((time.perf_counter() - started_at) * 1000, 2)
     registry = load_registry()
     candidate_keys = [decision.selected_model_key] + list(decision.fallback_chain or [])
     all_tool_calls: list[dict] = []
@@ -1591,6 +1439,8 @@ async def run_task_stream(
             "reason": decision.reason,
             "sticky": getattr(decision, "sticky", False),
             "classification_source": getattr(decision, "classification_source", "keyword"),
+            "skills_loaded": requested_skills,
+            "routing_ms": routing_ms,
             "confidence": getattr(decision, "confidence", None),
         }
 
@@ -1606,30 +1456,13 @@ async def run_task_stream(
             try:
                 if use_stream:
                     # True streaming for any provider with stream_complete
-                    from providers.base import Message as PMsg
-                    pmsgs = []
-                    for m in messages:
-                        role = m.get("role", "user")
-                        content = m.get("content") or ""
-                        if isinstance(content, list):
-                            # Flatten anthropic blocks for Message
-                            content = " ".join(
-                                b.get("text", "") for b in content
-                                if isinstance(b, dict) and b.get("type") == "text"
-                            ) or str(content)
-                        pmsgs.append(PMsg(
-                            role=role,
-                            content=content,
-                            tool_call_id=m.get("tool_call_id"),
-                            name=m.get("name"),
-                            tool_calls=m.get("tool_calls"),
-                        ))
+                    pmsgs = _provider_messages(messages)
                     tools_arg = TOOL_SCHEMAS if provider_name != "google" else TOOL_SCHEMAS
                     # Google expects functionDeclarations — provider adapts
-                    async for event in provider.stream_complete(
+                    async for event in orchestrator.stream_with_retry(provider.stream_complete,
                         messages=pmsgs,
                         model_id=model_id,
-                        system=SYSTEM_PROMPT,
+                        system=system_prompt,
                         max_tokens=4096,
                         tools=tools_arg,
                     ):
@@ -1638,6 +1471,9 @@ async def run_task_stream(
                             tok = event.get("text") or ""
                             text += tok
                             if tok:
+                                if first_token_ms is None:
+                                    first_token_ms = round((time.perf_counter() - started_at) * 1000, 2)
+                                    yield {"timing": True, "routing_ms": routing_ms, "time_to_first_token_ms": first_token_ms}
                                 yield {"token": tok}
                         elif et == "done":
                             resp = event.get("response")
@@ -1659,7 +1495,7 @@ async def run_task_stream(
                             provider=provider,
                             model_id=model_id,
                             messages=messages,
-                            system=SYSTEM_PROMPT,
+                            system=system_prompt,
                             provider_name=provider_name,
                         )
 
@@ -1739,7 +1575,7 @@ async def run_task_stream(
                 })
 
             for tc in tool_calls:
-                yield {"tool_start": tc["name"], "args": tc["args"]}
+                yield {"tool_start": tc["name"], "tool_call_id": tc["id"], "args": tc["args"]}
 
             diffs_by_index: dict[int, dict] = {}
 
@@ -1762,6 +1598,7 @@ async def run_task_stream(
                 })
                 yield {
                     "tool_result": tc["name"],
+                    "tool_call_id": tc["id"],
                     "preview": result[:300],
                     "success": tool_success,
                 }
@@ -1846,10 +1683,15 @@ async def run_task_stream(
         "model": decision.selected_model["display_name"],
         "tools": [t["tool"] for t in all_tool_calls],
         "stream": True,
+        "routing_ms": routing_ms,
+        "time_to_first_token_ms": first_token_ms,
+        "total_ms": round((time.perf_counter() - started_at) * 1000, 2),
     })
 
     yield {
         "done": True,
+        "timings": {"routing_ms": routing_ms, "time_to_first_token_ms": first_token_ms,
+                    "total_ms": round((time.perf_counter() - started_at) * 1000, 2)},
         "tool_calls": all_tool_calls,
         "response": final_text,
         "model_used": decision.selected_model["display_name"],

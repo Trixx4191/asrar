@@ -88,11 +88,12 @@ class HookCreatesPendingActionTest(unittest.TestCase):
         self.assertEqual(pending["args"]["command"], "sudo rm -rf /some/dir")
         self.assertEqual(pending["status"], "pending")
 
-    def test_confirmed_true_bypasses_hook_without_pending_action(self):
+    def test_model_cannot_grant_itself_approval(self):
         result = self.hooks.run_pre_tool_hooks(
             "run_command", {"command": "sudo apt install foo", "confirmed": True}, self.conv_id
         )
-        self.assertFalse(result.blocked)
+        self.assertTrue(result.blocked)
+        self.assertTrue(result.action_id)
 
     def test_safe_command_not_blocked(self):
         result = self.hooks.run_pre_tool_hooks("run_command", {"command": "ls -la"}, self.conv_id)

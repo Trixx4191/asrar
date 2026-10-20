@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import asyncio
 from dataclasses import dataclass
 
 logger = logging.getLogger("asrar.context")
@@ -162,7 +163,7 @@ def set_cached_summary(conversation_id: str, summary: str, up_to_message_count: 
 async def compact_history(
     history: list,
     conversation_id: str | None = None,
-    use_llm: bool = True,
+    use_llm: bool = False,
 ) -> CompactHistory:
     """
     Return a history list safe to send to the model.
@@ -199,7 +200,10 @@ async def compact_history(
 
     if not summary:
         if use_llm:
-            summary = await _llm_summarize(older)
+            try:
+                summary = await asyncio.wait_for(_llm_summarize(older), timeout=2.0)
+            except TimeoutError:
+                summary = None
         if not summary:
             summary = _local_summarize(older)
         if conversation_id:

@@ -1,16 +1,10 @@
 ---
 name: create-pr
-description: Create a pull request for the current session. Use when the user wants to open a PR with the session's changes.
+description: Create a GitHub pull request for the requested branch and changes.
 ---
-<!-- Customize this skill and select save to override its behavior. Delete that copy to restore the built-in behavior. -->
 
 # Create Pull Request
 
-Use the GitHub MCP server to create a pull request — do NOT use the `gh` CLI.
+Inspect git_status, git_diff, git_log, the current branch, and remote tracking state. Run relevant checks. Prepare a concrete title and description describing the final changes and validation.
 
-1. Run the compile and hygiene tasks (fixing any errors)
-2. If there are any uncommitted changes, use the `/commit` skill to commit them
-3. Review all changes in the current session
-4. Write a clear, concise PR title with a short area prefix (e.g. "sessions: …", "editor: …")
-5. Write a description covering what changed, why, and anything reviewers should know
-6. Create the pull request, passing `show_ui=false` so the PR is created without opening a confirmation UI
+Asrār has no GitHub MCP integration. If gh is installed and authenticated, use run_command with gh pr create; write multiline text to a temporary file and pass --body-file. Use use_skill with name commit for requested uncommitted work. Confirm the intended base branch when it cannot be determined. Publishing a branch or PR must be within the user’s request; never force-push. If GitHub access is unavailable, provide the prepared title/body and explain the blocker.

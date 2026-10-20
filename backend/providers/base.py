@@ -15,7 +15,7 @@ from typing import Any, AsyncIterator
 @dataclass
 class Message:
     role: str  # "user" | "assistant" | "system" | "tool"
-    content: str
+    content: str | list[dict]
     name: str | None = None
     tool_call_id: str | None = None
     tool_calls: list[dict] | None = None

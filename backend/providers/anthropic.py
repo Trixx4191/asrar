@@ -7,6 +7,7 @@ import json
 from typing import AsyncIterator
 
 import httpx
+from .transport import provider_error, request_timeout
 
 from .base import BaseProvider, Message, ProviderResponse, ProviderCapabilities
 
@@ -109,7 +110,7 @@ class AnthropicProvider(BaseProvider):
             body["temperature"] = temperature
 
         try:
-            async with httpx.AsyncClient(timeout=90) as client:
+            async with httpx.AsyncClient(timeout=request_timeout()) as client:
                 r = await client.post(
                     f"{self.base_url}/messages",
                     headers=self.headers(),
@@ -150,7 +151,7 @@ class AnthropicProvider(BaseProvider):
             )
         except Exception as e:
             return ProviderResponse(
-                content="", model_id=model_id, provider=self.name, success=False, error=str(e)
+                content="", model_id=model_id, provider=self.name, success=False, error=provider_error(e)
             )
 
     async def stream_complete(
@@ -180,7 +181,7 @@ class AnthropicProvider(BaseProvider):
         tool_calls = []
         current_tool = None
         try:
-            async with httpx.AsyncClient(timeout=90) as client:
+            async with httpx.AsyncClient(timeout=request_timeout()) as client:
                 async with client.stream(
                     "POST",
                     f"{self.base_url}/messages",
@@ -237,7 +238,7 @@ class AnthropicProvider(BaseProvider):
                 "type": "done",
                 "response": ProviderResponse(
                     content="", model_id=model_id, provider=self.name,
-                    success=False, error=str(e),
+                    success=False, error=provider_error(e),
                 ),
             }
             return
