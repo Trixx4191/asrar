@@ -55,10 +55,13 @@ class GoogleProvider(BaseProvider):
                 for call in m.tool_calls or []:
                     fn = call.get("function", {})
                     arguments = fn.get("arguments", "{}")
-                    parts.append({"functionCall": {
+                    part = {"functionCall": {
                         "name": fn.get("name") or call.get("name"),
                         "args": json.loads(arguments) if isinstance(arguments, str) else arguments,
-                    }})
+                    }}
+                    if call.get("thought_signature"):
+                        part["thoughtSignature"] = call["thought_signature"]
+                    parts.append(part)
                 contents.append({"role": "model", "parts": parts or [{"text": ""}]})
             else:
                 contents.append({"role": "user", "parts": [{"text": m.content or ""}]})
@@ -73,7 +76,7 @@ class GoogleProvider(BaseProvider):
             decls.append({
                 "name": fn["name"],
                 "description": fn.get("description", ""),
-                "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
+                "parametersJsonSchema": fn.get("parameters", {"type": "object", "properties": {}}),
             })
         return [{"functionDeclarations": decls}]
 
@@ -88,26 +91,28 @@ class GoogleProvider(BaseProvider):
         temperature=None,
     ) -> ProviderResponse:
         body: dict = {
-            "contents": self._build_contents(messages, system),
+            "contents": self._build_contents(messages, None),
             "generationConfig": {"maxOutputTokens": max_tokens},
         }
+        if system:
+            body["systemInstruction"] = {"parts": [{"text": system}]}
         gtools = self._to_tools(tools)
         if gtools:
             body["tools"] = gtools
         if temperature is not None:
             body["generationConfig"]["temperature"] = temperature
 
-        url = f"{self.base_url}/models/{model_id}:generateContent?key={self.api_key}"
+        url = f"{self.base_url}/models/{model_id}:generateContent"
         try:
             async with httpx.AsyncClient(timeout=request_timeout()) as client:
-                r = await client.post(url, json=body)
+                r = await client.post(url, json=body, headers={"x-goog-api-key": self.api_key})
                 r.raise_for_status()
                 data = r.json()
             text = ""
             tool_calls = []
             for cand in data.get("candidates", []):
                 for part in cand.get("content", {}).get("parts", []):
-                    if "text" in part:
+                    if "text" in part and not part.get("thought"):
                         text += part["text"]
                     elif "functionCall" in part:
                         fc = part["functionCall"]
@@ -115,6 +120,7 @@ class GoogleProvider(BaseProvider):
                             "id": fc.get("name", "fc"),
                             "name": fc.get("name", ""),
                             "args": fc.get("args") or {},
+                            "thought_signature": part.get("thoughtSignature"),
                         })
             return ProviderResponse(
                 content=text, model_id=model_id, provider=self.name, tool_calls=tool_calls
@@ -144,9 +150,11 @@ class GoogleProvider(BaseProvider):
         temperature=None,
     ) -> AsyncIterator[dict]:
         body: dict = {
-            "contents": self._build_contents(messages, system),
+            "contents": self._build_contents(messages, None),
             "generationConfig": {"maxOutputTokens": max_tokens},
         }
+        if system:
+            body["systemInstruction"] = {"parts": [{"text": system}]}
         gtools = self._to_tools(tools)
         if gtools:
             body["tools"] = gtools
@@ -155,13 +163,15 @@ class GoogleProvider(BaseProvider):
 
         url = (
             f"{self.base_url}/models/{model_id}:streamGenerateContent"
-            f"?key={self.api_key}&alt=sse"
+            "?alt=sse"
         )
         text = ""
         tool_calls = []
         try:
             async with httpx.AsyncClient(timeout=request_timeout()) as client:
-                async with client.stream("POST", url, json=body) as resp:
+                async with client.stream("POST", url, json=body, headers={"x-goog-api-key": self.api_key}) as resp:
+                    if resp.is_error:
+                        await resp.aread()
                     resp.raise_for_status()
                     async for line in resp.aiter_lines():
                         if not line.startswith("data:"):
@@ -172,7 +182,7 @@ class GoogleProvider(BaseProvider):
                             continue
                         for cand in chunk.get("candidates", []):
                             for part in cand.get("content", {}).get("parts", []):
-                                if "text" in part:
+                                if "text" in part and not part.get("thought"):
                                     tok = part["text"]
                                     text += tok
                                     yield {"type": "token", "text": tok}
@@ -182,6 +192,7 @@ class GoogleProvider(BaseProvider):
                                         "id": fc.get("name", "fc"),
                                         "name": fc.get("name", ""),
                                         "args": fc.get("args") or {},
+                                        "thought_signature": part.get("thoughtSignature"),
                                     }
                                     tool_calls.append(tc)
                                     yield {

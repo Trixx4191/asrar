@@ -1,6 +1,6 @@
 """Run a bounded, read-only skill/tool smoke test against a configured model.
 
-Usage: venv/bin/python scripts/smoke.py --model llama-70b
+Usage: venv/bin/python scripts/smoke.py --model groq-fast
 Uses a temporary database and never exposes API keys or edits project files.
 """
 
@@ -19,6 +19,9 @@ from dotenv import load_dotenv
 load_dotenv(ROOT / ".env")
 
 from core import agent, memory
+from fastapi import FastAPI
+import httpx
+from api.routes import chat
 
 
 async def smoke(model: str, timeout: float):
@@ -38,27 +41,39 @@ async def smoke(model: str, timeout: float):
             events = []
 
             async def collect():
-                async for event in agent.run_task_stream(
-                    "Call use_skill with name code-review. Then report the skill name "
-                    "and its heading, and say SKILLS_OK. Do not inspect or edit project "
-                    "files or call any other tool. This is a read-only integration test.",
-                    force_model=model, conversation_id=conversation_id,
-                ):
-                    events.append(event)
+                app = FastAPI()
+                app.include_router(chat.router, prefix="/chat")
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client:
+                    response = await client.post("/chat/stream", json={
+                        "message": "Call use_skill with name code-review. Then report the skill name "
+                        "and its heading, and say SKILLS_OK. Do not inspect or edit project "
+                        "files or call any other tool. This is a read-only integration test.",
+                        "force_model": model, "conversation_id": conversation_id,
+                    })
+                for line in response.text.splitlines():
+                    if line.startswith("data:"):
+                        events.append(json.loads(line[5:]))
 
             try:
                 await asyncio.wait_for(collect(), timeout=timeout)
             except TimeoutError:
-                print(json.dumps({"success": False, "model": model, "error": "Smoke test timed out"}))
+                print(json.dumps({"success": False, "model": model, "error": "Smoke test timed out",
+                                  "skill_loaded_by_tool": any(e.get("tool_result") == "use_skill" and e.get("success") for e in events),
+                                  "last_event": next((e for e in reversed(events) if e.get("meta") or e.get("timing")), None)}))
                 return False
             done = next((e for e in reversed(events) if e.get("done")), {})
             tools = done.get("tool_calls", [])
             loaded = any(c.get("tool") == "use_skill" and c.get("success")
                          and c.get("args", {}).get("name") == "code-review" for c in tools)
             ok = loaded and "SKILLS_OK" in done.get("response", "")
+            persisted = memory.get_messages_full(conversation_id)
+            saved = bool(persisted and persisted[-1]["role"] == "assistant"
+                         and persisted[-1]["content"] == done.get("response"))
+            ok = ok and saved
             error = next((e["error"] for e in events if "error" in e), None)
             print(json.dumps({
                 "success": ok, "model": model, "skill_loaded_by_tool": loaded,
+                "assistant_persisted": saved,
                 "response": done.get("response"), "timings": done.get("timings"),
                 "error": error,
             }, indent=2))
@@ -67,7 +82,7 @@ async def smoke(model: str, timeout: float):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", default="llama-70b")
+    parser.add_argument("--model", default="groq-fast")
     parser.add_argument("--timeout", type=float, default=40)
     args = parser.parse_args()
     sys.exit(0 if asyncio.run(smoke(args.model, args.timeout)) else 1)

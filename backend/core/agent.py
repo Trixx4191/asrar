@@ -902,13 +902,13 @@ async def _dispatch_tool(name: str, args: dict, conversation_id: str | None = No
             return f"Plan restored from checkpoint {result.get('checkpoint_id')}:\n" + ("\n".join(lines) or "(empty)")
 
         else:
-            return f"Unknown tool: {name}"
+            return f"Error: unknown tool: {name}"
 
     except KeyError as e:
-        return f"Tool error ({name}): missing required argument {e}"
+        return f"Error: tool {name}: missing required argument {e}"
     except Exception as e:
         logger.exception(f"Tool {name} raised")
-        return f"Tool error ({name}): {e}"
+        return f"Error: tool {name}: {e}"
 
 
 async def _call_tool(name: str, args: dict, conversation_id: str | None = None) -> str:
@@ -921,6 +921,8 @@ async def _call_tool(name: str, args: dict, conversation_id: str | None = None) 
       - PostToolUse: can't undo what happened, but reviews the result and
         flags failures into the execution log.
     """
+    if not isinstance(args, dict):
+        return "Error: tool arguments must be an object"
     pre = hooks.run_pre_tool_hooks(name, args, conversation_id)
     if pre.blocked:
         if conversation_id:
@@ -1094,7 +1096,8 @@ async def run_task(
 
     # Speculative race for fast_chat: fire top-2 models, first good answer wins
     if (
-        decision.task_type in ("fast_chat", "summarization")
+        os.getenv("ASRAR_SPECULATIVE_RACE", "0") == "1"
+        and decision.task_type in ("fast_chat", "summarization")
         and not force_model
         and len(candidate_keys) >= 2
         and conversation_id is None  # keep streaming path sequential for event ordering
@@ -1235,6 +1238,7 @@ async def run_task(
                             "id": tc["id"],
                             "type": "function",
                             "function": {"name": tc["name"], "arguments": json.dumps(tc["args"])},
+                            "thought_signature": tc.get("thought_signature"),
                         }
                         for tc in tool_calls
                     ],
@@ -1283,7 +1287,21 @@ async def run_task(
                     })
 
         if attempt_failed:
+            if any(call["tool"] not in orchestrator.READ_ONLY_TOOLS
+                   and call["tool"] not in {"update_plan", "rollback_plan"}
+                   for call in attempt_tool_calls):
+                return {
+                    "response": "❌ Provider failed after executing tools. Work is incomplete; "
+                                "automatic replay was stopped to avoid repeating side effects. " + str(last_error),
+                    "model_used": model["display_name"], "task_type": decision.task_type,
+                    "routing_reason": decision.reason, "tool_calls": attempt_tool_calls,
+                }
             continue
+
+        if not attempt_text:
+            attempt_text = "Stopped after the tool-round limit; this task is incomplete."
+        if conversation_id and memory.get_verification_state(conversation_id)["dirty"]:
+            attempt_text += "\n\nVerification is still outstanding for changed code; this work is not verified."
 
         success = True
         orchestrator.record_success(model["provider"])
@@ -1569,6 +1587,7 @@ async def run_task_stream(
                             "id": tc["id"],
                             "type": "function",
                             "function": {"name": tc["name"], "arguments": json.dumps(tc["args"])},
+                            "thought_signature": tc.get("thought_signature"),
                         }
                         for tc in tool_calls
                     ],
@@ -1649,7 +1668,23 @@ async def run_task_stream(
                     })
 
         if attempt_failed:
+            if any(call["tool"] not in orchestrator.READ_ONLY_TOOLS
+                   and call["tool"] not in {"update_plan", "rollback_plan"}
+                   for call in attempt_tool_calls):
+                yield {
+                    "done": True, "incomplete": True,
+                    "response": "❌ Provider failed after executing tools. Work is incomplete; "
+                                "automatic replay was stopped to avoid repeating side effects. " + str(last_error),
+                    "model_used": model["display_name"], "task_type": decision.task_type,
+                    "routing_reason": decision.reason, "tool_calls": attempt_tool_calls,
+                }
+                return
             continue
+
+        if not attempt_text:
+            attempt_text = "Stopped after the tool-round limit; this task is incomplete."
+        if conversation_id and memory.get_verification_state(conversation_id)["dirty"]:
+            attempt_text += "\n\nVerification is still outstanding for changed code; this work is not verified."
 
         success = True
         orchestrator.record_success(provider_name)

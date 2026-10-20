@@ -188,6 +188,8 @@ class AnthropicProvider(BaseProvider):
                     headers=self.headers(),
                     json=body,
                 ) as resp:
+                    if resp.is_error:
+                        await resp.aread()
                     resp.raise_for_status()
                     async for line in resp.aiter_lines():
                         if not line.startswith("data:"):

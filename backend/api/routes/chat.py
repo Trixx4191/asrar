@@ -159,6 +159,12 @@ async def chat_stream(req: ChatRequest):
                         final_text = event["response"] or final_text
                     model_used = event.get("model_used") or model_used
                     task_type = event.get("task_type") or task_type
+                    # Commit before announcing completion so the client can
+                    # immediately refresh the conversation without a race.
+                    memory.add_message(
+                        conversation_id, "assistant", final_text,
+                        model=model_used, task_type=task_type, tool_calls=final_tool_calls,
+                    )
 
                 if event.get("meta"):
                     model_used = event.get("model") or model_used
@@ -170,14 +176,6 @@ async def chat_stream(req: ChatRequest):
             yield f"data: {json.dumps({'error': str(e), 'trace': traceback.format_exc()[:500]})}\n\n"
             return
 
-        # Persist assistant turn
-        memory.add_message(
-            conversation_id,
-            "assistant",
-            final_text or "",
-            model=model_used,
-            task_type=task_type,
-            tool_calls=final_tool_calls,
-        )
-
-    return StreamingResponse(generator(), media_type="text/event-stream")
+    return StreamingResponse(generator(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+    })
