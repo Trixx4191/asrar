@@ -5,9 +5,10 @@ POST /chat/stream — SSE streaming via shared run_task_stream (no duplicated lo
 POST /chat/approve — human-gated destructive command approval
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from typing import Literal
 import json
 import traceback
 from pathlib import Path
@@ -23,10 +24,21 @@ router = APIRouter()
 
 
 class ChatRequest(BaseModel):
-    message: str
+    message: str = Field(min_length=1, max_length=100000)
     conversation_id: str | None = None
     history: list[dict] = []
     force_model: str | None = None
+    runtime: Literal["api", "codex"] = "api"
+    codex_model: str | None = None
+    reasoning_effort: str | None = None
+
+
+def check_conversation(conversation_id, runtime):
+    from core.codex_chat import session_for
+    if conversation_id and not memory.get_conversation(conversation_id):
+        raise HTTPException(404, "Conversation not found")
+    if conversation_id and runtime == "api" and session_for(conversation_id):
+        raise HTTPException(409, "This chat uses your ChatGPT subscription. Start a new chat to use an API connection.")
 
 
 class ChatResponse(BaseModel):
@@ -41,6 +53,9 @@ class ChatResponse(BaseModel):
 @router.post("", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     """Non-streaming chat — shared agent loop."""
+    check_conversation(req.conversation_id, req.runtime)
+    if req.runtime == "codex":
+        raise HTTPException(400, "Use /chat/stream for Codex tasks and interactive approvals")
     conversation_id = req.conversation_id or memory.create_conversation(
         title=memory.auto_title(req.message)
     )
@@ -124,12 +139,19 @@ async def approve_action(req: ApprovalRequest):
 @router.post("/stream")
 async def chat_stream(req: ChatRequest):
     """SSE streaming — thin wrapper around shared run_task_stream."""
+    check_conversation(req.conversation_id, req.runtime)
 
     async def generator():
         conversation_id = req.conversation_id or memory.create_conversation(
             title=memory.auto_title(req.message)
         )
         yield f"data: {json.dumps({'conversation_id': conversation_id})}\n\n"
+
+        if req.runtime == "codex":
+            from core.codex_chat import stream_chat
+            async for event in stream_chat(req.message, conversation_id, req.codex_model, req.reasoning_effort):
+                yield f"data: {json.dumps(event)}\n\n"
+            return
 
         history = memory.get_messages(conversation_id)
         memory.add_message(conversation_id, "user", req.message)

@@ -78,6 +78,15 @@ def init_db() -> None:
             )
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id)")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS runtime_sessions (
+                conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+                runtime TEXT NOT NULL,
+                thread_id TEXT,
+                workspace TEXT,
+                account_scope TEXT
+            )
+        """)
 
         # Supervisor state: one row per conversation, tracks whether the
         # last assistant turn was an unresolved clarifying question, and
