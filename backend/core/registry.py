@@ -62,6 +62,8 @@ def _ensure_key_placeholder(name: str):
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
     if re.search(r"^\s*(?:export\s+)?" + re.escape(name) + r"\s*=", existing, re.M):
         return
+    if os.getenv(name):
+        return  # An empty file value must not mask a configured process secret.
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
     with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
@@ -85,6 +87,8 @@ def _validated_entry(key: str, entry: dict) -> dict:
     if not 0 <= entry.get("priority", 2) <= 100 or entry.get("context_window", 32000) < 1:
         raise ValueError("Priority must be 0–100 and context_window must be positive")
     config = connection_config(provider, entry)
+    if config["protocol"] == "anthropic" and "/" in model_id:
+        raise ValueError("Anthropic native model IDs do not use an organization/ prefix; use openrouter for gateway IDs")
     entry.update({name: config[name] for name in ("protocol", "api_base", "api_key_env")})
     return entry
 
@@ -115,6 +119,8 @@ def configure_model(key: str, **changes) -> dict:
     allowed = {"model_id", "provider", "display_name", "strengths", "context_window", "api_base", "free", "priority", "protocol", "api_key_env"}
     if set(changes) - allowed:
         raise ValueError("Unsupported model configuration fields")
+    if not changes:
+        raise ValueError("Supply at least one configuration field to update")
     with _REGISTRY_LOCK:
         registry = load_registry()
         if key not in registry["models"]:
@@ -127,6 +133,18 @@ def configure_model(key: str, **changes) -> dict:
                 entry.pop(field, None)
         if "model_id" in changes:
             changes["id"] = changes.pop("model_id")
+        if "strengths" not in changes:
+            # Older registry entries mixed routing tasks with descriptive tags.
+            # Preserve that metadata while allowing their connections to be repaired.
+            aliases = {"chat": "fast_chat", "lightweight": "fast_chat", "fast_reasoning": "deep_reasoning",
+                       "current_events": "web_research", "math": "deep_reasoning", "logic": "deep_reasoning",
+                       "complex_planning": "deep_reasoning", "debugging": "coding", "shell_scripts": "shell_automation",
+                       "simple_tasks": "fast_chat", "quick_answers": "fast_chat"}
+            old = entry.get("strengths", [])
+            tasks = list(dict.fromkeys(aliases.get(task, task) for task in old if aliases.get(task, task) in TASK_TYPES))
+            if tasks != old:
+                entry["capability_tags"] = list(dict.fromkeys(entry.get("capability_tags", []) + old))
+                entry["strengths"] = tasks or ["general"]
         entry.update(changes)
         entry = _validated_entry(key, entry)
         entry["validation"] = {"status": "untested"}
@@ -181,7 +199,16 @@ def list_models(only_enabled: bool = False) -> list[dict]:
             }
         except ValueError as exc:
             readiness = {"configured": False, "configuration_error": str(exc)}
-        models.append({"key": key, **model, **readiness})
+        item = {"key": key, **model, **readiness}
+        validation = model.get("validation") or {}
+        if validation.get("tested_at"):
+            try:
+                if configuration.ENV_PATH.stat().st_mtime > datetime.fromisoformat(validation["tested_at"]).timestamp():
+                    item["validation"] = {**validation, "status": "stale", "ready": False,
+                                          "message": "Local settings changed after this test. Test the connection again"}
+            except (FileNotFoundError, ValueError):
+                pass
+        models.append(item)
     return sorted(models, key=lambda model: model.get("priority", 0), reverse=True)
 
 
@@ -253,6 +280,8 @@ async def lookup_and_register_model(name_or_url: str, *, provider: str | None = 
                                     validate: bool = True) -> dict:
     model_id = _extract_model_id(name_or_url)
     provider = _normalize_provider(provider) or _detect_provider(model_id) or "openrouter"
+    if name_or_url.startswith(("https://openrouter.ai/", "https://www.openrouter.ai/")) and provider != "openrouter":
+        raise ValueError("An OpenRouter URL must use the openrouter provider")
     info = None
     if provider == "openrouter":
         info = await _fetch_openrouter_info(model_id)
@@ -260,11 +289,21 @@ async def lookup_and_register_model(name_or_url: str, *, provider: str | None = 
             model_id = info["id"]
         elif "/" not in model_id or re.search(r"\s", model_id):
             raise ValueError("Model name could not be resolved. Supply an exact provider/model ID or explicit native provider")
-    model_key = key or re.sub(r"[^a-z0-9._-]+", "-", f"{provider}-{model_id}".lower()).strip("-")[:128]
+    model_key = key
+    if not model_key:
+        with _REGISTRY_LOCK:
+            for existing_key, candidate in load_registry()["models"].items():
+                if (candidate["id"] == model_id and candidate["provider"] == provider
+                        and all(value is None or candidate.get(field) == value
+                                for field, value in (("api_base", api_base), ("protocol", protocol), ("api_key_env", api_key_env)))):
+                    model_key = existing_key
+                    break
+    model_key = model_key or re.sub(r"[^a-z0-9._-]+", "-", f"{provider}-{model_id}".lower()).strip("-")[:128]
     with _REGISTRY_LOCK:
         existing = load_registry()["models"].get(model_key)
     if existing:
         if (existing["id"] != model_id or existing["provider"] != provider
+                or (strengths is not None and existing.get("strengths") != strengths)
                 or any(value is not None and existing.get(field) != value
                        for field, value in (("api_base", api_base), ("protocol", protocol), ("api_key_env", api_key_env)))):
             raise ValueError("This model key has different configuration; use configure_model")
@@ -274,7 +313,7 @@ async def lookup_and_register_model(name_or_url: str, *, provider: str | None = 
             key=model_key, model_id=model_id, provider=provider,
             display_name=(info or {}).get("name", model_id),
             strengths=strengths or (info or {}).get("strengths", ["general"]),
-            context_window=(info or {}).get("context_length", 32000),
+            context_window=(info or {}).get("context_length") or 32000,
             api_base=api_base, protocol=protocol, api_key_env=api_key_env,
             free=bool(info and str(info.get("pricing", {}).get("prompt")) == "0"
                       and str(info.get("pricing", {}).get("completion")) == "0"), priority=priority,
@@ -318,11 +357,14 @@ async def test_model(key: str, *, timeout: float = 12) -> dict:
             messages.append(Message("assistant", response.content or "", tool_calls=calls))
             messages.extend(Message("tool", "ASRAR_MODEL_OK", name=call["name"], tool_call_id=call["id"])
                             for call in response.tool_calls)
-            final = await provider.complete(messages=messages, model_id=model["id"], max_tokens=256)
-            ready = final.success and "ASRAR_MODEL_OK" in (final.content or "")
+            final = None
+            async for event in provider.stream_complete(messages=messages, model_id=model["id"], max_tokens=256):
+                if event.get("type") == "done":
+                    final = event.get("response")
+            ready = bool(final and final.success and "ASRAR_MODEL_OK" in (final.content or ""))
             return {"status": "ready" if ready else "failed", "ready": ready,
-                    "message": "Authentication, model completion, and tool-result round trip passed" if ready
-                    else final.error or "Tool-result round trip did not complete"}
+                    "message": "Authentication, model completion, and streamed tool-result round trip passed" if ready
+                    else (final.error if final else None) or "Streamed tool-result round trip did not complete"}
         try:
             result = await asyncio.wait_for(probe(), timeout=timeout)
         except TimeoutError:

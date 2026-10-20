@@ -9,6 +9,7 @@ touching anything destructive.
 
 Full behavior spec and version history: [`ASRAR.md`](./ASRAR.md).
 Codebase map: [`LAYOUT.md`](./LAYOUT.md).
+Model setup, chat registration, and key troubleshooting: [`MODEL_CONNECTIONS.md`](./MODEL_CONNECTIONS.md).
 
 ---
 
@@ -155,7 +156,10 @@ Base URL: `http://127.0.0.1:8000`
 | `GET` | `/skills` | List discoverable workflow skills |
 | `GET` | `/skills/{name}` | Inspect one skill and its instructions |
 | `POST` | `/models` | Add a model to the registry |
-| `POST` | `/models/lookup` | Resolve a model key to its config |
+| `POST` | `/models/lookup` | Resolve/register a model and test its connection |
+| `GET` | `/models/providers` | Supported provider presets and protocols |
+| `PATCH` | `/models/{key}` | Update an existing model connection |
+| `POST` | `/models/{key}/test` | Test authentication, completion, and streamed tool results |
 | `DELETE` | `/models/{key}` | Remove a model from the registry |
 | `PATCH` | `/models/{key}/toggle` | Enable/disable a model |
 | `GET` | `/tasks` | Task-history endpoint |

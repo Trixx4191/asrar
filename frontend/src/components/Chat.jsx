@@ -197,7 +197,7 @@ function normalizeToolCalls(raw) {
   }));
 }
 
-export default function Chat({ forceModel, models = [], onForceModelChange }) {
+export default function Chat({ forceModel, models = [], onForceModelChange, onModelsChanged }) {
   const [messages, setMessages]   = useState([]);
   const [input, setInput]         = useState("");
   const [loading, setLoading]     = useState(false);
@@ -385,6 +385,7 @@ export default function Chat({ forceModel, models = [], onForceModelChange }) {
             }
 
           } else if (chunk.tool_result) {
+            if (["register_model", "configure_model", "test_model"].includes(chunk.tool_result)) onModelsChanged?.();
             // Tool finished — update the last pending tool entry
             updateAssistant(m => {
               const calls = [...(m.toolCalls || [])];

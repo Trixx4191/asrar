@@ -32,11 +32,11 @@ export default function App() {
   }, []);
 
   // Load model list for selector
+  function refreshModels() {
+    fetch(`${API}/models`).then(r => r.json()).then(d => setModels(d.models || [])).catch(() => {});
+  }
   useEffect(() => {
-    fetch(`${API}/models`)
-      .then(r => r.json())
-      .then(d => setModels(d.models || []))
-      .catch(() => {});
+    refreshModels();
   }, [view]);
 
   const isElectron = typeof window.asrar !== "undefined";
@@ -108,7 +108,7 @@ export default function App() {
 
         {/* Main */}
         <div className="main-content">
-          {view === "chat"     && <Chat forceModel={forceModel} models={models} onForceModelChange={setForceModel} />}
+          {view === "chat"     && <Chat forceModel={forceModel} models={models} onForceModelChange={setForceModel} onModelsChanged={refreshModels} />}
           {view === "models"   && <ModelRegistry />}
           {view === "skills"   && <Skills />}
           {view === "history"  && <TaskHistory />}

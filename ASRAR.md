@@ -61,8 +61,9 @@ You can add, remove, or disable models at any time.
 | Key              | Model                  | Best For                        |
 |------------------|------------------------|---------------------------------|
 | `deepseek-r1`    | DeepSeek R1            | Deep reasoning, logic, math     |
-| `gemini-flash`   | Gemini 2.0 Flash       | Web research, multimodal        |
-| `llama-70b`      | Llama 3.3 70B (Groq)   | Fast chat, quick answers        |
+| `gemini-flash`   | Gemini 3.8 Flash       | Web research, multimodal        |
+| `groq-fast`      | GPT-OSS 20B (Groq)     | Fast chat, quick answers        |
+| `groq-code`      | GPT-OSS 120B (Groq)    | Coding, documents, diagnosis    |
 | `deepseek-coder` | DeepSeek V3            | Coding, debugging, PC diagnosis |
 | `claude-haiku`   | Claude Haiku 4.5       | coding, project creation,Documents, summarization        |
 | `mistral-small`  | Mistral Small          | Lightweight, fast tasks         |
@@ -73,7 +74,12 @@ Tell Asrār:
 
 Or use the UI registry panel to paste in a model name, ID, or link.
 Asrār will look it up, test it, and register it automatically.
-Add looked up models to the providers and also integrate it to the whole system and make provision for api key input in the .env file 
+The agent uses `register_model`, `configure_model`, `list_models`, and
+`test_model` to wire the provider protocol, endpoint, credential variable,
+and task routing. Missing credentials get an empty local `.env` placeholder;
+keys are entered locally and reload on the next provider request. A model is
+reported ready only after its completion and streamed tool-result probe passes.
+See [Model connections](MODEL_CONNECTIONS.md) for supported protocols and diagnostics.
 
 
 ---

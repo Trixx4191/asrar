@@ -8,6 +8,7 @@ from typing import AsyncIterator, Any
 
 import httpx
 from .transport import provider_error, request_timeout
+from .configuration import redact_secrets
 
 from .base import Message, ProviderResponse
 
@@ -31,7 +32,7 @@ async def openai_complete(
     for m in messages:
         entry: dict = {"role": m.role, "content": m.content}
         if m.tool_calls:
-            entry["tool_calls"] = m.tool_calls
+            entry["tool_calls"] = [{key: call[key] for key in ("id", "type", "function") if key in call} for call in m.tool_calls]
         if m.tool_call_id:
             entry["tool_call_id"] = m.tool_call_id
         if m.name:
@@ -41,7 +42,7 @@ async def openai_complete(
     body: dict[str, Any] = {
         "model": model_id,
         "messages": all_messages,
-        "max_tokens": max_tokens,
+        ("max_completion_tokens" if provider_name == "openai" else "max_tokens"): max_tokens,
         "stream": False,
     }
     if tools:
@@ -103,7 +104,7 @@ async def openai_stream(
     for m in messages:
         entry: dict = {"role": m.role, "content": m.content}
         if m.tool_calls:
-            entry["tool_calls"] = m.tool_calls
+            entry["tool_calls"] = [{key: call[key] for key in ("id", "type", "function") if key in call} for call in m.tool_calls]
         if m.tool_call_id:
             entry["tool_call_id"] = m.tool_call_id
         if m.name:
@@ -113,7 +114,7 @@ async def openai_stream(
     body: dict[str, Any] = {
         "model": model_id,
         "messages": all_messages,
-        "max_tokens": max_tokens,
+        ("max_completion_tokens" if provider_name == "openai" else "max_tokens"): max_tokens,
         "stream": True,
     }
     if tools:
@@ -124,23 +125,38 @@ async def openai_stream(
 
     text = ""
     tool_calls_acc: dict[int, dict] = {}
+    finish_reason = None
+    completed = False
+    stream_error = None
     try:
         async with httpx.AsyncClient(timeout=request_timeout(timeout)) as client:
             async with client.stream(
                 "POST", f"{base_url}/chat/completions", headers=headers, json=body
             ) as resp:
+                if resp.is_error:
+                    await resp.aread()
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():
                     if not line.startswith("data:"):
                         continue
                     payload = line[5:].strip()
                     if payload == "[DONE]":
+                        completed = True
                         break
                     try:
                         chunk = json.loads(payload)
                     except json.JSONDecodeError:
                         continue
-                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    if chunk.get("error"):
+                        error = chunk["error"]
+                        message = error.get("message", "Stream failed") if isinstance(error, dict) else "Stream failed"
+                        stream_error = "Provider error: " + redact_secrets(str(message))[:400]
+                        break
+                    choices = chunk.get("choices") or []
+                    if not choices:
+                        continue  # Usage-only streaming frames contain no choices.
+                    finish_reason = choices[0].get("finish_reason") or finish_reason
+                    delta = choices[0].get("delta", {})
                     if delta.get("content"):
                         text += delta["content"]
                         yield {"type": "token", "text": delta["content"]}
@@ -176,8 +192,19 @@ async def openai_stream(
         try:
             args = json.loads(v["args_str"]) if v["args_str"] else {}
         except json.JSONDecodeError:
-            args = {}
+            stream_error = "Provider error: incomplete tool arguments"
+            break
+        if not isinstance(args, dict):
+            stream_error = "Provider error: tool arguments must be an object"
+            break
         tool_calls.append({"id": v["id"], "name": v["name"], "args": args})
+
+    if not completed and not finish_reason:
+        stream_error = stream_error or "Provider error: stream ended before completion"
+    if finish_reason in {"length", "content_filter"}:
+        stream_error = f"Provider error: completion stopped with {finish_reason}"
+    if not text.strip() and not tool_calls:
+        stream_error = stream_error or "Provider error: empty response"
 
     yield {
         "type": "done",
@@ -186,5 +213,8 @@ async def openai_stream(
             model_id=model_id,
             provider=provider_name,
             tool_calls=tool_calls,
+            finish_reason=finish_reason,
+            success=stream_error is None,
+            error=stream_error,
         ),
     }

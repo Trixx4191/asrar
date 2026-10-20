@@ -94,7 +94,7 @@ export default function Settings({ agentName, onRename }) {
         {/* API status */}
         <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.7 }}>
           API keys are loaded from <code style={{ fontFamily: "var(--font-mono)", color: "var(--text-secondary)" }}>.env</code> in the project root.
-          Edit that file and restart the backend to update keys.
+          Edit that file to update keys; the next provider request picks up the change. Use Test in Models to check the connection.
         </div>
       </div>
     </div>

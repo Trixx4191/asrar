@@ -5,7 +5,7 @@ Also handles the "add by name or URL" agent lookup flow.
 """
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 import sys
 from pathlib import Path
 
@@ -35,7 +35,7 @@ class AddModelRequest(ModelRequest):
     priority: int = 2
     protocol: str | None = None
     api_key_env: str | None = None
-    validate: bool = True
+    validate_connection: bool = Field(default=True, alias="validate")
 
 
 class LookupRequest(ModelRequest):
@@ -47,7 +47,7 @@ class LookupRequest(ModelRequest):
     api_key_env: str | None = None
     strengths: list[str] | None = None
     priority: int = 2
-    validate: bool = True
+    validate_connection: bool = Field(default=True, alias="validate")
 
 
 class UpdateModelRequest(ModelRequest):
@@ -75,7 +75,7 @@ async def get_models(only_enabled: bool = False):
 @router.post("")
 async def add_model_manual(req: AddModelRequest):
     try:
-        args = req.model_dump()
+        args = req.model_dump(by_alias=True)
         validate = args.pop("validate")
         entry = add_model(**args)
         if validate:
@@ -89,7 +89,7 @@ async def add_model_manual(req: AddModelRequest):
 async def lookup_model(req: LookupRequest):
     """Agent looks up model by name/URL and auto-registers it."""
     try:
-        entry = await lookup_and_register_model(**req.model_dump())
+        entry = await lookup_and_register_model(**req.model_dump(by_alias=True))
         return {"success": True, "model": entry}
     except ValueError as exc:
         raise HTTPException(400, str(exc))
@@ -103,7 +103,7 @@ async def providers():
 @router.patch("/{key}")
 async def update_model(key: str, req: UpdateModelRequest):
     try:
-        entry = configure_model(key, **req.model_dump(exclude_unset=True))
+        entry = configure_model(key, **req.model_dump(exclude_unset=True, exclude_none=True))
         return {"success": True, "model": entry}
     except ValueError as exc:
         raise HTTPException(400, str(exc))
