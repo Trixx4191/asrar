@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import ModelBadge from "./ModelBadge";
+import { apiFetch as fetch, api } from "../api";
 
 const API = "http://127.0.0.1:8000";
 
@@ -54,7 +55,8 @@ function PlanPanel({ items }) {
   );
 }
 
-function Message({ msg }) {
+function Message({ msg, showActivity = true }) {
+  const [copied, setCopied] = useState(false);
   const parts = (msg.content || "").split("```");
 
   return (
@@ -70,20 +72,24 @@ function Message({ msg }) {
           />
         )}
         <span>{msg.time}</span>
+        {!!msg.content && <button className="message-copy" onClick={async () => {
+          try { await navigator.clipboard.writeText(msg.content); setCopied(true); setTimeout(() => setCopied(false), 1800); }
+          catch { setCopied(false); }
+        }}>{copied ? "Copied" : "Copy"}</button>}
       </div>
-      {msg.routingReason && (
+      {showActivity && msg.routingReason && (
         <div className="routing-reason" title={msg.routingReason}>
           {msg.routingReason}
         </div>
       )}
-      {msg.skillsLoaded?.length > 0 && <div className="routing-reason">Skills: {msg.skillsLoaded.join(", ")}</div>}
-      {msg.timings && <div className="routing-reason">
+      {showActivity && msg.skillsLoaded?.length > 0 && <div className="routing-reason">Skills: {msg.skillsLoaded.join(", ")}</div>}
+      {showActivity && msg.timings && <div className="routing-reason">
         Routing {Math.round(msg.timings.routing_ms || 0)} ms
         {msg.timings.time_to_first_token_ms != null && ` · First token ${(msg.timings.time_to_first_token_ms / 1000).toFixed(2)} s`}
       </div>}
 
       {/* Tool call blocks — shown above the text */}
-      {msg.toolCalls?.length > 0 && (
+      {showActivity && msg.toolCalls?.length > 0 && (
         <div className="tool-calls-list">
           {msg.toolCalls.map((tc, i) => (
             <ToolCall key={i} name={tc.name} args={tc.args} result={tc.result} success={tc.success} />
@@ -116,6 +122,8 @@ function Message({ msg }) {
         )}
         {msg.streaming && <span className="stream-cursor">▋</span>}
       </div>
+      {msg.notice && <div className="notice" role="status">{msg.notice}</div>}
+      {msg.usage?.total?.totalTokens != null && showActivity && <div className="routing-reason">{msg.usage.total.totalTokens.toLocaleString()} tokens in this thread</div>}
     </div>
   );
 }
@@ -171,9 +179,12 @@ function ApprovalBanner({ pending, onDecide }) {
   return (
     <div className="approval-banner">
       <div className="approval-banner-text">
-        <strong>Approval needed</strong> — this command modifies the system:
+        <strong>Approval needed</strong> — review this action before continuing:
       </div>
       <pre className="approval-banner-command">{pending.command}</pre>
+      {pending.cwd && <div className="field-help">Folder: {pending.cwd}</div>}
+      {pending.reason && <p>{pending.reason}</p>}
+      {pending.network && <p>Network access: {pending.network.host} ({pending.network.protocol})</p>}
       <div className="approval-banner-actions">
         <button className="btn-brutal approval-approve" onClick={() => onDecide(true)}>
           Approve &amp; run
@@ -197,7 +208,7 @@ function normalizeToolCalls(raw) {
   }));
 }
 
-export default function Chat({ forceModel, models = [], onForceModelChange, onModelsChanged }) {
+export default function Chat({ forceModel, models = [], onForceModelChange, onModelsChanged, preferences, connection, onConnect, onBusyChange }) {
   const [messages, setMessages]   = useState([]);
   const [input, setInput]         = useState("");
   const [loading, setLoading]     = useState(false);
@@ -205,6 +216,13 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
   const [conversationId, setConversationId] = useState(null);
   const [plan, setPlan]           = useState([]); // current step-by-step plan (update_plan tool)
   const [pendingApproval, setPendingApproval] = useState(null); // {action_id, command, reason}
+  const [search, setSearch] = useState("");
+  const [chatRuntime, setChatRuntime] = useState(null);
+  const [lastPrompt, setLastPrompt] = useState("");
+  const [statusError, setStatusError] = useState("");
+  const runtime = preferences?.runtime || "codex";
+  const runtimeMismatch = !!chatRuntime && runtime !== chatRuntime;
+  const turnRuntime = useRef(runtime);
   const bottomRef     = useRef(null);
   const abortRef      = useRef(null);
   const assistantRef  = useRef(null); // tracks the index of the current streaming message
@@ -216,7 +234,16 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
 
   useEffect(() => {
     fetchConversations();
+    return () => { abortRef.current?.abort(); };
   }, []);
+  useEffect(() => { onBusyChange?.(loading); }, [loading, onBusyChange]);
+  useEffect(() => {
+    function shortcuts(e) {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "o") { e.preventDefault(); newChat(); }
+    }
+    window.addEventListener("keydown", shortcuts);
+    return () => window.removeEventListener("keydown", shortcuts);
+  }, [loading]);
 
   const now = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
@@ -237,6 +264,9 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
       if (!r.ok) return;
       const d = await r.json();
       const conv = d.conversation;
+      setChatRuntime(conv.runtime || "api");
+      setPendingApproval(null);
+      setStatusError("");
       const mapped = (conv.messages || []).map(m => ({
         role: m.role,
         content: m.content,
@@ -260,6 +290,10 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
     conversationIdRef.current = null;
     setMessages([]);
     setPlan([]);
+    setChatRuntime(null);
+    setPendingApproval(null);
+    setStatusError("");
+    setInput("");
   }
 
   async function deleteConversation(id, e) {
@@ -279,7 +313,11 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
 
   async function send() {
     const text = input.trim();
-    if (!text || loading) return;
+    if (!text || loading || !preferences || runtimeMismatch) return;
+    if (runtime === "codex" && !connection?.connected) { onConnect?.(); return; }
+    setLastPrompt(text);
+    setStatusError("");
+    turnRuntime.current = runtime;
 
     setPendingApproval(null);
 
@@ -316,14 +354,22 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
           message: text,
           conversation_id: conversationIdRef.current,
           force_model: forceModel || null,
+          runtime,
+          codex_model: preferences?.codex_model || null,
+          reasoning_effort: preferences?.reasoning_effort || null,
         }),
         signal: controller.signal,
       });
 
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({}));
+        throw new Error(typeof detail.detail === "string" ? detail.detail : `Request failed (${res.status})`);
+      }
+
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-      let isNewConversation = !conversationIdRef.current;
+      let receivedDone = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -343,6 +389,7 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
             // Backend created or confirmed the conversation this turn belongs to.
             conversationIdRef.current = chunk.conversation_id;
             setConversationId(chunk.conversation_id);
+            setChatRuntime(turnRuntime.current);
 
           } else if (chunk.meta) {
             // Routing metadata — model, task type, classifier source/confidence, reason
@@ -357,6 +404,21 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
               skillsLoaded: chunk.skills_loaded || [],
               timings: { routing_ms: chunk.routing_ms },
             }));
+
+          } else if (chunk.plan) {
+            setPlan(chunk.plan);
+
+          } else if (chunk.notice) {
+            updateAssistant(m => ({ ...m, notice: chunk.notice }));
+
+          } else if (chunk.usage) {
+            updateAssistant(m => ({ ...m, usage: chunk.usage }));
+
+          } else if (chunk.codex_diff !== undefined) {
+            updateAssistant(m => ({ ...m, diffs: [{ path: "Workspace changes", diff: chunk.codex_diff }] }));
+
+          } else if (chunk.approval_resolved) {
+            setPendingApproval(null);
 
           } else if (chunk.timing) {
             updateAssistant(m => ({ ...m, timings: chunk }));
@@ -411,6 +473,9 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
               action_id: chunk.action_id,
               command: chunk.command || chunk.reason || "(action requires approval)",
               reason: chunk.reason,
+              runtime: chunk.runtime,
+              cwd: chunk.cwd,
+              network: chunk.network,
             });
 
           } else if (chunk.nudge) {
@@ -419,6 +484,8 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
             updateAssistant(m => ({ ...m, nudging: true, nudgeFiles: chunk.files || [] }));
 
           } else if (chunk.done) {
+            receivedDone = true;
+            setPendingApproval(null);
             // Stream complete — fold any final metadata from the done event
             updateAssistant(m => ({
               ...m,
@@ -434,6 +501,7 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
             }));
 
           } else if (chunk.error) {
+            setStatusError(chunk.error);
             updateAssistant(m => ({
               ...m,
               content: m.content + `\n\n⚠️ Error: ${chunk.error}`,
@@ -442,6 +510,10 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
             }));
           }
         }
+      }
+
+      if (!receivedDone && !controller.signal.aborted) {
+        updateAssistant(m => ({ ...m, streaming: false, notice: m.notice || "The response ended before completion. Check the connection before retrying." }));
       }
 
       // Refresh rail + plan panel from backend truth
@@ -457,13 +529,15 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
       if (e.name !== "AbortError") {
         updateAssistant(m => ({
           ...m,
-          content: `Connection error: ${e.message}\n\nIs the backend running? Run: python main.py`,
+          content: m.content || `Could not complete this task: ${e.message}`,
           streaming: false,
         }));
+        setStatusError(e.message);
       }
     } finally {
       setLoading(false);
       abortRef.current = null;
+      updateAssistant(m => ({ ...m, streaming: false }));
     }
   }
 
@@ -473,6 +547,12 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
     setPendingApproval(null);
 
     try {
+      if (action.runtime === "codex") {
+        await api("/connections/codex/approve", { method: "POST", body: {
+          conversation_id: conversationIdRef.current, action_id: action.action_id, approved,
+        } });
+        return;
+      }
       const res = await fetch(`${API}/chat/approve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -495,14 +575,19 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
     }
   }
 
-  function stop() {
+  async function stop() {
+    if (turnRuntime.current === "codex" && conversationIdRef.current) {
+      try { await api("/connections/codex/stop", { method: "POST", body: { conversation_id: conversationIdRef.current } }); }
+      catch (e) { setStatusError(`Could not confirm stop: ${e.message}`); }
+    }
     abortRef.current?.abort();
     setLoading(false);
     updateAssistant(m => ({ ...m, streaming: false }));
+    setPendingApproval(null);
   }
 
   function onKey(e) {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+    if (e.key === "Enter" && !e.shiftKey && (preferences?.enter_to_send || e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing) { e.preventDefault(); send(); }
   }
 
   function autoResize(e) {
@@ -515,12 +600,13 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
       {/* Conversation rail — persisted chats, backed by SQLite */}
       <div className="chat-rail">
         <div className="chat-rail-header">
-          <button className="chat-rail-new" onClick={newChat}>+ New chat</button>
+          <button className="chat-rail-new" disabled={loading} onClick={newChat} title="Ctrl/Cmd+Shift+O">+ New chat</button>
+          <input className="conversation-search" aria-label="Search conversations" placeholder="Search chats…" value={search} onChange={e => setSearch(e.target.value)} />
         </div>
         <div className="chat-rail-list">
           {conversations.length === 0 ? (
             <div className="chat-rail-empty">No saved chats yet</div>
-          ) : conversations.map(c => (
+          ) : conversations.filter(c => c.title.toLowerCase().includes(search.toLowerCase())).map(c => (
             <div
               key={c.id}
               className={`chat-rail-item ${c.id === conversationId ? "active" : ""}`}
@@ -531,7 +617,7 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
                 <button
                   className="chat-rail-item-delete"
                   onClick={(e) => deleteConversation(c.id, e)}
-                  title="Delete"
+                  title="Delete" disabled={loading}
                 >✕</button>
               </div>
               <span className="chat-rail-item-meta">{c.message_count} msgs · {relativeLabel(c.updated_at)}</span>
@@ -542,56 +628,49 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
 
       <div className="chat-container">
         <PlanPanel items={plan} />
+        {runtimeMismatch && <div className="notice">This chat uses {chatRuntime === "codex" ? "your ChatGPT subscription" : "an API provider"}. Switch back to that connection or start a new chat.</div>}
         <div className="chat-messages">
           {messages.length === 0 ? (
             <div className="chat-empty">
-              <div className="chat-empty-glyph">⬡</div>
-              <div className="chat-empty-title">Asrār is ready</div>
+              <div className="chat-empty-glyph">◈</div>
+              <div className="eyebrow">A SPACE FOR YOUR NEXT IDEA</div>
+              <div className="chat-empty-title">What shall we work on?</div>
               <div className="chat-empty-hint">
-                Ask anything — browse the web, work on files,<br />
-                run commands, diagnose your PC.
+                {runtime === "codex" ? "Explore your project, understand a problem, or build something together." : "Work with your configured API providers."}
               </div>
+              <div className="starter-grid">{["Explain this codebase and how its pieces fit together", "Review this project for bugs and suggest improvements", "Help me plan and build a new feature"].map(prompt => <button key={prompt} onClick={() => setInput(prompt)}>{prompt}<span>↗</span></button>)}</div>
             </div>
           ) : (
-            messages.map((m, i) => <Message key={i} msg={m} />)
+            messages.map((m, i) => <Message key={i} msg={m} showActivity={preferences?.show_activity !== false} />)
           )}
           <div ref={bottomRef} />
         </div>
 
         <ApprovalBanner pending={pendingApproval} onDecide={handleApprovalDecision} />
+        {statusError && !loading && <div className="chat-error" role="alert"><span>{statusError}</span>{lastPrompt && <button onClick={() => { setInput(lastPrompt); setStatusError(""); }}>Edit & retry prompt</button>}</div>}
 
         <div className="chat-input-area">
           <div className="chat-input-row">
             <textarea
               className="chat-textarea"
-              placeholder="Ask Asrār anything..."
+              aria-label="Message Asrār"
+              placeholder={runtimeMismatch ? "Start a new chat to change connections…" : "Ask, plan, build…"}
+              disabled={runtimeMismatch}
               value={input}
               onChange={e => { setInput(e.target.value); autoResize(e); }}
               onKeyDown={onKey}
               rows={1}
             />
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              {models.length > 0 && (
-                <select
-                  className="model-select-inline"
-                  value={forceModel || ""}
-                  onChange={e => onForceModelChange?.(e.target.value || null)}
-                  title="Select model for this chat"
-                >
-                  <option value="">Auto</option>
-                  {models.filter(m => m.enabled !== false).map(m => (
-                    <option key={m.key} value={m.key}>{m.display_name.split('/').pop()}</option>
-                  ))}
-                </select>
-              )}
               {loading
-                ? <button className="send-btn" onClick={stop} style={{ background: "var(--red)" }}>■</button>
-                : <button className="send-btn" onClick={send} disabled={!input.trim()}>↑</button>
+                ? <button className="send-btn" aria-label="Stop task" onClick={stop} style={{ background: "var(--red)" }}>■</button>
+                : <button className="send-btn" aria-label="Send message" onClick={send} disabled={!input.trim() || !preferences || runtimeMismatch}>↑</button>
               }
             </div>
           </div>
           <div className="input-hint">
-            Enter to send · Shift+Enter for new line{loading ? " · ■ to stop" : ""}
+            {preferences?.enter_to_send ? "Enter to send · Shift+Enter for new line" : "Ctrl/Cmd+Enter to send"}{loading ? " · Stop cancels the running task" : ""}
+            <span>{runtime === "codex" ? "Codex · subscription" : "API · provider billing"}</span>
           </div>
         </div>
       </div>

@@ -49,6 +49,9 @@ async def get_conversation(conversation_id: str):
         raise HTTPException(status_code=404, detail="Conversation not found")
     conv["messages"] = memory.get_messages_full(conversation_id)
     conv["plan"] = memory.get_plan(conversation_id)
+    from core.codex_chat import session_for
+    session = session_for(conversation_id)
+    conv["runtime"] = "codex" if session else "api"
     return {"conversation": conv}
 
 
