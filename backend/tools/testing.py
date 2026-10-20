@@ -82,6 +82,16 @@ def detect_test_command(path: str = ".") -> tuple[str | None, str | None]:
         except OSError:
             pass
     if has_pytest_marker:
+        # A unittest repository should not need pytest installed merely because
+        # its test files follow the same naming convention.
+        candidates = sorted(p.glob("tests/test_*.py")) or sorted(p.glob("test_*.py"))
+        if candidates and not ({"pytest.ini", "conftest.py"} & names):
+            sources = [f.read_text(encoding="utf-8", errors="replace") for f in candidates[:20]]
+            if any("import unittest" in source for source in sources) and not any(
+                re.search(r"(?:import pytest|from pytest)", source) for source in sources
+            ):
+                directory = "tests" if (p / "tests").is_dir() else "."
+                return "unittest", f"python -m unittest discover -s {directory} -v"
         return "pytest", "python -m pytest -q"
 
     if "package.json" in names:

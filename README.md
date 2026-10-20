@@ -2,8 +2,8 @@
 
 > *أسرار* — Arabic for "Secrets / Mysteries"
 
-A local agentic AI assistant. It routes each task to the strongest available
-free model, plans multi-step work, edits files with reviewable diffs, runs
+A local agentic AI assistant. It routes each task to a configured model,
+plans multi-step work, edits files with reviewable diffs, runs
 its own tests before calling a task done, and asks for real approval before
 touching anything destructive.
 
@@ -16,7 +16,7 @@ Codebase map: [`LAYOUT.md`](./LAYOUT.md).
 
 | Capability | |
 |---|---|
-| Multi-model routing | Classifies each task and picks the strongest free model for it, with a fallback chain if one fails |
+| Multi-model routing | Routes locally by default, honors manual selection, and falls back after provider failures |
 | Agentic tool loop | Reads/writes files, greps the codebase, runs shell commands, browses the web, up to 10 iterations per turn |
 | Self-verification | Runs the project's tests (or a quick script check) after code edits, before saying a task is done |
 | Codebase awareness | Searches file contents and filenames before editing, instead of guessing at structure |
@@ -55,12 +55,22 @@ discover them with its internal `list_skills` tool and load one with
 `use_skill`. Skills provide procedure and guardrails; filesystem, shell, Git,
 package, and approval operations still go through the normal agent tools.
 
+The **Skills** panel shows the catalog and full instructions. Names and
+descriptions are included in the agent prompt so it can select a relevant
+playbook without an extra discovery round trip. Request a particular skill
+with `$code-review` or `/code-review`; its body loads before the first model
+call. Otherwise the model chooses whether to call `use_skill`.
+
+All 13 bundled skills are adapted for Asrār’s tools. GitHub workflows use an
+installed authenticated `gh` CLI; they do not assume Codex or Copilot APIs.
+
 **API keys** — create a `.env` file in the project root:
 ```bash
 ANTHROPIC_API_KEY=...
 GROQ_API_KEY=...
 GOOGLE_API_KEY=...
 DEEPSEEK_API_KEY=...
+MISTRAL_API_KEY=...
 # Optional, only needed for the paid-tier models in config/models.json:
 OPENROUTER_API_KEY=...
 QWEN_API_KEY=...
@@ -90,9 +100,38 @@ npm run dev
 ## Testing
 
 ```bash
-pip install pytest --break-system-packages
-python -m pytest tests/ -v
+python -m unittest discover -s tests -v
+cd frontend && npx vite build
 ```
+
+Run a real, read-only API/tool/provider smoke test using a configured key:
+
+```bash
+python scripts/smoke.py --model groq-code --timeout 25
+python scripts/check_models.py groq
+```
+
+The smoke test uses a temporary conversation database, permits only skill
+discovery/loading, and verifies the assistant reply was persisted. It makes
+real provider requests, so normal provider billing and rate limits apply.
+The catalog check reports exact model IDs; provider aliases may still work
+without appearing as exact matches.
+
+Routing defaults to `ASRAR_ROUTING_MODE=fast`: local keyword/intent detection
+with short-follow-up context. To experiment with a model classifier, set
+`ASRAR_ROUTING_MODE=hybrid` and optionally `ASRAR_ROUTING_TIMEOUT=1.5` in `.env`
+and restart. The deadline caps at five seconds; manual model selection skips
+that request. Local history compaction also avoids a separate LLM call by
+default. `ASRAR_SPECULATIVE_RACE=1` enables experimental buffered dual-model
+racing, which makes extra requests; it is off by default.
+
+Streaming displays routing and first-token timings. A stalled provider has a
+15-second first-event deadline, and transient HTTP errors retry once before
+any output. Automatic fallback stops after mutating tool execution to avoid
+replaying side effects. These are runtime controls, not an OS sandbox.
+
+See [v0.13 upgrade notes](UPGRADE_NOTES_v0.13.md) for validation, sources, and
+remaining limitations.
 
 ---
 
@@ -113,6 +152,8 @@ Base URL: `http://127.0.0.1:8000`
 | `GET` | `/conversations/{id}/plan` | Current step-by-step plan for that conversation, if any |
 | `GET` | `/conversations/{id}/log` | Raw execution log (routing decisions, tool calls, retries) |
 | `GET` | `/models` | List the model registry |
+| `GET` | `/skills` | List discoverable workflow skills |
+| `GET` | `/skills/{name}` | Inspect one skill and its instructions |
 | `POST` | `/models` | Add a model to the registry |
 | `POST` | `/models/lookup` | Resolve a model key to its config |
 | `DELETE` | `/models/{key}` | Remove a model from the registry |

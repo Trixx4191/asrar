@@ -30,7 +30,9 @@ def read_file(path: str, max_chars: int = 8000) -> FileResult:
 
     try:
         # Plain text types
-        if suffix in {".txt", ".md", ".py", ".js", ".ts", ".json", ".csv", ".log", ".yaml", ".yml", ".toml", ".env"}:
+        if suffix in {".txt", ".md", ".py", ".js", ".jsx", ".ts", ".tsx", ".json", ".csv", ".log", ".yaml", ".yml", ".toml", ".env",
+                      ".html", ".css", ".scss", ".sql", ".xml", ".ini", ".cfg", ".go", ".rs", ".java", ".c", ".h", ".cpp", ".hpp",
+                      ".rb", ".sh", ".swift", ".kt", ".php", ".cs", ".svelte", ".vue", ".mjs", ".cjs"} or p.name in {"Dockerfile", "Makefile", ".gitignore"}:
             content = p.read_text(encoding="utf-8", errors="replace")
             return FileResult(success=True, content=content[:max_chars], path=str(p))
 

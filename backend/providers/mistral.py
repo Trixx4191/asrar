@@ -3,10 +3,12 @@
 import os
 
 from .deepseek import DeepSeekProvider
+from .base import ProviderCapabilities
 
 
 class MistralProvider(DeepSeekProvider):
     name = "mistral"
+    capabilities = ProviderCapabilities(streaming=True, native_tools=True, json_mode=True)
 
     def __init__(self):
         super().__init__()
