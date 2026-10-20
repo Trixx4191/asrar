@@ -18,6 +18,7 @@ Model setup, chat registration, and key troubleshooting: [`MODEL_CONNECTIONS.md`
 | Capability | |
 |---|---|
 | ChatGPT subscription sign-in | Connect through the official Codex App Server with browser or device-code sign-in; no API key required for Codex tasks |
+| Claude subscription sign-in | Connect Claude Code with an eligible Claude plan through the official Agent SDK; separate from Anthropic API billing |
 | Workspace controls | Choose a folder, read-only or workspace-write access, network permissions, and custom instructions |
 | Account and model controls | Discover available Codex models and reasoning efforts, view subscription usage, reconnect, or switch accounts |
 | Multi-model routing | Routes locally by default, honors manual selection, and falls back after provider failures |
@@ -37,7 +38,7 @@ Model setup, chat registration, and key troubleshooting: [`MODEL_CONNECTIONS.md`
 
 - Python 3.11+
 - Node.js 18+ (for the Electron/React frontend)
-- A ChatGPT account eligible for Codex, or a provider API key for optional API mode
+- A ChatGPT account eligible for Codex, an eligible Claude plan for Claude Code, or a provider API key for optional API mode
 
 ## Setup
 
@@ -62,7 +63,10 @@ access. Choose a workspace and access mode in **Settings**. Available models
 and reasoning efforts come from the connected account. API providers remain
 an explicit, separately billed mode; subscription tasks never fall back to them.
 
-See [subscription setup and v0.14 validation](UPGRADE_NOTES_v0.14.md).
+For Claude, open **Accounts → Claude Code → Sign in with Claude**, then choose
+**Use Claude in chat**. The Python requirements include its SDK and bundled runtime.
+See [Claude subscription setup](CLAUDE_CONNECTIONS.md) and
+[subscription setup and v0.14 validation](UPGRADE_NOTES_v0.14.md).
 
 **Workflow skills**
 

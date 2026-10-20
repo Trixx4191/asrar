@@ -90,8 +90,9 @@ They do not consume a real subscription or establish a successful account login.
 
 A real signed-in task must still be checked after the user completes OpenAI
 sign-in. Model access, rate limits, and subscription eligibility are determined
-by OpenAI. Other providers' subscription sign-ins are not implemented in this
-release; their supported API connections remain available. This release verifies
+by OpenAI. Claude Code subscription sign-in has since been added through the official
+Agent SDK; see [Claude setup and validation](CLAUDE_CONNECTIONS.md). Other
+providers' supported API connections remain available. This release verifies
 the local source/development build; a standalone installer with a bundled Python
 runtime is a separate distribution task.
 

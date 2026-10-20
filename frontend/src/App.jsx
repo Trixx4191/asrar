@@ -55,7 +55,7 @@ export default function App() {
     try {
       const result = await api("/connections/codex");
       setConnection(result);
-      if (result.connected) {
+      if (result.connected && !result.login) {
         const catalog = await api("/connections/codex/models");
         setCodexModels(catalog.models || []);
       } else setCodexModels([]);
@@ -66,7 +66,7 @@ export default function App() {
     try {
       const result = await api("/connections/claude");
       setClaudeConnection(result);
-      if (result.connected) {
+      if (result.connected && !result.login) {
         const catalog = await api("/connections/claude/models");
         setClaudeModels(catalog.models || []);
       } else setClaudeModels([]);

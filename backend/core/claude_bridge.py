@@ -55,7 +55,8 @@ def sdk_environment():
     # SDK env is merged with the parent. Empty overrides neutralize inherited
     # API keys/provider selectors without mutating the process environment.
     clean = cli_environment()
-    return {**{name: "" for name in os.environ if name not in clean}, **clean}
+    return {**{name: "" for name in os.environ if name not in clean}, **clean,
+            "CLAUDE_CODE_ENTRYPOINT": "sdk-py"}
 
 
 def trusted_login_url(value):
@@ -155,7 +156,7 @@ class ClaudeBridge:
             # are exchanged or saved by the application.
             self._login_process = await asyncio.create_subprocess_exec(
                 binary, "--settings", '{"forceLoginMethod":"claudeai"}',
-                "auth", "login", stdin=asyncio.subprocess.PIPE,
+                "auth", "login", "--claudeai", stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
                 env=cli_environment(), cwd=str(AUTH_HOME), limit=1024 * 1024,
             )
@@ -210,10 +211,16 @@ class ClaudeBridge:
             await self._login_process.stdin.drain()
 
     async def _cancel_login(self):
+        process = self._login_process
         if self._login_task and not self._login_task.done():
             self._login_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._login_task
+        # The watcher may have been cancelled before its coroutine started.
+        if process and process.returncode is None:
+            process.kill()
+            await process.wait()
+        self._login_process = None
         self.login = None
 
     async def cancel_login(self):
