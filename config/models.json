@@ -167,6 +167,30 @@
       "free": true,
       "enabled": true,
       "priority": 4
+    },
+    "openai-gpt-4.1": {
+      "id": "gpt-4.1",
+      "provider": "openai",
+      "display_name": "GPT-4.1 (OpenAI)",
+      "strengths": [
+        "general",
+        "coding",
+        "analysis"
+      ],
+      "context_window": 1047576,
+      "api_base": "https://api.openai.com/v1",
+      "free": false,
+      "priority": 2,
+      "protocol": "openai_compatible",
+      "api_key_env": "OPENAI_API_KEY",
+      "enabled": true,
+      "added_at": "2026-10-20T22:35:32.670933",
+      "validation": {
+        "status": "failed",
+        "ready": false,
+        "message": "Provider HTTP 429: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.",
+        "tested_at": "2026-10-20T22:36:17.706636"
+      }
     }
   },
   "task_model_map": {
@@ -178,7 +202,8 @@
     ],
     "coding": [
       "groq-code",
-      "deepseek-coder"
+      "deepseek-coder",
+      "openai-gpt-4.1"
     ],
     "document_work": [
       "groq-code",
@@ -199,7 +224,8 @@
     ],
     "analysis": [
       "deepseek-r1",
-      "claude-haiku"
+      "claude-haiku",
+      "openai-gpt-4.1"
     ],
     "summarization": [
       "groq-fast",
@@ -211,7 +237,8 @@
     ],
     "general": [
       "groq-fast",
-      "gemini-flash"
+      "gemini-flash",
+      "openai-gpt-4.1"
     ]
   }
 }
