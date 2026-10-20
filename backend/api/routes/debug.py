@@ -99,21 +99,8 @@ async def check_file(path: str):
 @router.get("/env-keys")
 async def check_env_keys():
     """Check which API keys are configured."""
-    keys_to_check = [
-        "ANTHROPIC_API_KEY",
-        "GROQ_API_KEY",
-        "GOOGLE_API_KEY",
-        "DEEPSEEK_API_KEY",
-        "MISTRAL_API_KEY",
-        "OPENROUTER_API_KEY",
-    ]
-    
-    available = {}
-    for key in keys_to_check:
-        val = os.getenv(key, "")
-        available[key] = {
-            "configured": bool(val),
-            "preview": val[:10] + "..." if len(val) > 10 else val
-        }
-    
-    return available
+    from providers.configuration import PROVIDER_DEFAULTS, setting
+    from core.registry import list_models
+    names = {provider["env_key"] for provider in PROVIDER_DEFAULTS.values()}
+    names.update(model["api_key_env"] for model in list_models() if model.get("api_key_env"))
+    return {name: {"configured": bool(setting(name).strip())} for name in sorted(names)}

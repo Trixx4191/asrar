@@ -71,6 +71,15 @@ def _build_decision(
             )
         raise RuntimeError(f"Selected model '{force_model}' is disabled, unknown, or missing its API key")
 
+    # A saved connection that failed its probe must not become an automatic
+    # routing candidate merely because a key is nonempty. Manual selection
+    # remains possible for diagnosing a repaired connection.
+    configured = available
+    available = {key for key in available if registry["models"][key].get("validation", {}).get("status")
+                 not in {"failed", "timeout", "tool_calling_unverified"}}
+    if configured and not available:
+        raise RuntimeError("Configured models failed validation. Use Models → Test after fixing the connection")
+
     task_map = registry["task_model_map"]
     preferred = task_map.get(task.task_type, task_map.get("general", []))
 

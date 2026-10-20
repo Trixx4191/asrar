@@ -53,14 +53,18 @@ class FastRoutingTest(unittest.IsolatedAsyncioTestCase):
             model.assert_not_awaited()
 
     async def test_hybrid_classification_times_out_and_uses_local_result(self):
+        cancelled = []
         async def slow(*args, **kwargs):
-            await asyncio.sleep(10)
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
         with patch.dict(os.environ, {"ASRAR_ROUTING_MODE": "hybrid", "ASRAR_ROUTING_TIMEOUT": "0.05"}), \
              patch.object(classifier, "_model_classify", new=slow):
-            start = time.perf_counter()
             result = await classifier.classify_task_async("something ambiguous")
             self.assertEqual(result.source, "keyword")
-            self.assertLess(time.perf_counter() - start, 0.5)
+            self.assertTrue(cancelled)
 
     async def test_manual_selection_bypasses_async_classifier(self):
         with patch.dict(os.environ, {"GROQ_API_KEY": "test"}), \
@@ -227,14 +231,18 @@ class IsolatedMemoryTest(unittest.IsolatedAsyncioTestCase):
 
 class ProviderProtocolTest(unittest.IsolatedAsyncioTestCase):
     async def test_provider_stall_has_a_bounded_first_event_deadline(self):
+        cancelled = []
         async def stream(**kwargs):
-            await asyncio.sleep(10)
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
             yield {"type": "token", "text": "late"}
-        start = time.perf_counter()
         with self.assertRaises(TimeoutError):
             async for _ in orchestrator.stream_with_retry(stream, first_event_timeout=0.02):
                 pass
-        self.assertLess(time.perf_counter() - start, 0.5)
+        self.assertTrue(cancelled)
 
     async def test_failure_after_mutation_is_not_replayed_on_another_model(self):
         from core.router import RoutingDecision, load_registry

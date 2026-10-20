@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from dotenv import dotenv_values
 
 ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
+_file_owned_names: dict[str, set[str]] = {}
 
 PROVIDER_DEFAULTS = {
     "anthropic": {"api_base": "https://api.anthropic.com/v1", "env_key": "ANTHROPIC_API_KEY", "protocol": "anthropic"},
@@ -42,6 +43,10 @@ def setting(name: str, default: str = "") -> str:
         values = _file_settings(str(ENV_PATH), stat.st_mtime_ns, stat.st_size)
     except FileNotFoundError:
         values = {}
+    names = _file_owned_names.setdefault(str(ENV_PATH), set())
+    names.update(values)
+    if name in names and name not in values:
+        return ""  # Do not resurrect an old dotenv value inherited at startup.
     return str(values[name] or "") if name in values else os.getenv(name, default)
 
 

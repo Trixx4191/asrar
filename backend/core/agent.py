@@ -63,6 +63,8 @@ IMPORTANT AGENTIC BEHAVIOR:
   a new compatible provider needs its API base URL and an api_key_env variable
   name. Keys are entered only in the local .env file, never in chat/tool arguments.
   Registration creates missing credential placeholders and updates task routing.
+  register_model already tests the connection; do not call test_model again
+  after it reports ready unless the user explicitly requests a fresh retest.
   Report the test result: saved/configured is not the same as working. If a model
   uses a different API protocol, explain the missing adapter rather than guessing.
 - When asked to create, edit, or modify files/projects, use your tools to actually do it — don't just describe what you'd do.
@@ -1084,6 +1086,8 @@ async def _llm_call_with_tools(provider, model_id, messages, system, provider_na
     if not response.success:
         error = response.error or "empty provider failure"
         return error if error.startswith("Provider HTTP") else f"Provider error: {error}", []
+    if not (response.content or "").strip() and not response.tool_calls:
+        return "Provider error: empty response", []
     return response.content or "", list(response.tool_calls or [])
 
 

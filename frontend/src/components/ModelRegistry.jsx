@@ -62,9 +62,10 @@ export default function ModelRegistry() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name_or_url: lookupVal.trim(),
-          ...(provider && { provider }), ...(apiBase && { api_base: apiBase }),
-          ...(apiKeyEnv && { api_key_env: apiKeyEnv }),
-          ...(provider === "custom" && { provider: "custom", protocol }),
+          ...(provider && { provider }),
+          ...(provider === "custom" && { protocol,
+            ...(apiBase && { api_base: apiBase }), ...(apiKeyEnv && { api_key_env: apiKeyEnv }),
+          }),
         }),
       });
       const d = await r.json();
@@ -88,7 +89,7 @@ export default function ModelRegistry() {
       <div className="panel-header">
         <div className="panel-title">Model Registry</div>
         <div className="panel-subtitle">
-          {models.filter(m => m.enabled !== false).length} active · {models.length} total
+          {models.filter(m => m.enabled !== false).length} enabled · {models.length} total
         </div>
       </div>
 
