@@ -42,10 +42,6 @@ async def run_turn(message, conversation_id, session_id, resume, settings, model
         await queue.put({"error": safe_preview(str(exc), 2000) or "Claude Code could not initialize this task"})
     finally:
         active.pop("client", None)
-        # Closing a browser must not leave a producer blocked on a full queue.
-        if queue.full():
-            queue.get_nowait()
-        queue.put_nowait({"claude_closed": True})
 
 
 async def _run_turn(message, conversation_id, session_id, resume, settings, model, effort, queue, active):
@@ -236,6 +232,9 @@ async def stream_chat(message, conversation_id, model=None, effort=None, context
             message += "\n\nAttached workspace files (read these for context):\n" + "\n".join("- " + path for path in paths)
         chosen_model, chosen_effort = model or settings.claude_model, effort or settings.claude_effort
         catalog = await bridge.models()
+        if active["stopped"]:
+            yield {"done": True, "response": "Task stopped.", "model_used": model_name, "task_type": "coding", "tool_calls": []}
+            return
         selected = next((item for item in catalog if item["id"] == chosen_model), None)
         if chosen_model and not selected:
             raise ClaudeError("This Claude model is unavailable. Select the account default or refresh models.")
@@ -248,6 +247,15 @@ async def stream_chat(message, conversation_id, model=None, effort=None, context
         started = True
         active["task"] = asyncio.create_task(run_turn(message, conversation_id, session_id, bool(existing), settings,
                                                      chosen_model, chosen_effort, queue, active))
+        def closed(task):
+            # A task cancelled before its first instruction never enters its
+            # finally block. The callback still wakes the HTTP stream.
+            if not task.cancelled():
+                task.exception()
+            if queue.full():
+                queue.get_nowait()
+            queue.put_nowait({"claude_closed": True})
+        active["task"].add_done_callback(closed)
         yield {"meta": True, "model": model_name, "provider": "claude", "task_type": "coding",
                "reason": "Claude subscription · Claude Code · " + settings.access_mode}
         while True:
@@ -259,6 +267,11 @@ async def stream_chat(message, conversation_id, model=None, effort=None, context
             if event.get("token"):
                 text += event["token"]
             if event.get("claude_closed"):
+                if active["stopped"] and not persisted:
+                    text += "\n\nTask stopped."
+                    memory.add_message(conversation_id, "assistant", text, model=model_name, task_type="coding", tool_calls=tools)
+                    persisted = True
+                    yield {"done": True, "response": text, "model_used": model_name, "task_type": "coding", "tool_calls": tools}
                 break
             if event.get("claude_result"):
                 tools = event.get("tool_calls", [])
