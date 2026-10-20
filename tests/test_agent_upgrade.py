@@ -24,6 +24,26 @@ from providers.transport import provider_error
 
 
 class FastRoutingTest(unittest.IsolatedAsyncioTestCase):
+    async def test_primary_intents_route_locally(self):
+        examples = {
+            "hello": "fast_chat",
+            "write a Python function to sort numbers": "coding",
+            "please summarize this report": "summarization",
+            "search online for recent AI news": "web_research",
+            "diagnose why my PC crashes": "pc_diagnosis",
+            "install this package using pip": "shell_automation",
+            "analyze the CSV dataset": "analysis",
+            "describe this image": "multimodal",
+            "prove this theorem step by step": "deep_reasoning",
+            "draft an email to a client": "document_work",
+            "review the code changes": "coding",
+            "fix the failing tests": "coding",
+            "create a GitHub pull request": "document_work",
+        }
+        with patch.dict(os.environ, {"ASRAR_ROUTING_MODE": "fast"}):
+            for prompt, expected in examples.items():
+                with self.subTest(prompt=prompt):
+                    self.assertEqual((await classifier.classify_task_async(prompt)).task_type, expected)
     async def test_default_route_does_not_make_classifier_request(self):
         with patch.dict(os.environ, {"ASRAR_ROUTING_MODE": "fast"}), \
              patch.object(classifier, "_model_classify", new_callable=AsyncMock) as model:
@@ -45,8 +65,8 @@ class FastRoutingTest(unittest.IsolatedAsyncioTestCase):
     async def test_manual_selection_bypasses_async_classifier(self):
         with patch.dict(os.environ, {"GROQ_API_KEY": "test"}), \
              patch("core.router.classify_task_async", new_callable=AsyncMock) as model:
-            result = await route_async("hello", force_model="llama-70b")
-            self.assertEqual(result.selected_model_key, "llama-70b")
+            result = await route_async("hello", force_model="groq-fast")
+            self.assertEqual(result.selected_model_key, "groq-fast")
             model.assert_not_awaited()
 
     async def test_invalid_manual_selection_is_explicit(self):
@@ -114,6 +134,48 @@ class IsolatedMemoryTest(unittest.IsolatedAsyncioTestCase):
         agent._track_verification_state("run_tests", {}, "❌ tests failed", self.cid)
         self.assertTrue(memory.get_verification_state(self.cid)["dirty"])
 
+    async def test_api_skill_discovery_and_chat_persistence(self):
+        from fastapi import FastAPI
+        from api.routes import chat, skills as skills_api
+        app = FastAPI()
+        app.include_router(chat.router, prefix="/chat")
+        app.include_router(skills_api.router, prefix="/skills")
+
+        async def stream(**kwargs):
+            yield {"meta": True, "model": "test", "task_type": "general"}
+            yield {"token": "intermediate text"}
+            yield {"done": True, "response": "final answer", "tool_calls": [], "model_used": "test"}
+
+        with patch.object(chat, "run_task_stream", new=stream):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client:
+                catalog = await client.get("/skills")
+                self.assertIn("code-review", {s["name"] for s in catalog.json()["skills"]})
+                detail = await client.get("/skills/code-review")
+                self.assertIn("# Code Review", detail.json()["skill"]["content"])
+                self.assertEqual((await client.get("/skills/missing")).status_code, 404)
+                response = await client.post("/chat/stream", json={"message": "hello", "conversation_id": self.cid})
+        self.assertEqual(response.headers["x-accel-buffering"], "no")
+        messages = memory.get_messages_full(self.cid)
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[-1]["content"], "final answer")
+
+    async def test_api_approval_dispatches_stored_action_exactly_once(self):
+        from api.routes.chat import approve_action, ApprovalRequest
+        args = {"package": "test-package"}
+        action_id = memory.create_pending_action(self.cid, "pip_install", args)
+        observed = []
+
+        async def dispatch(name, args, conversation_id=None):
+            observed.append((name, args["package"]))
+            self.assertFalse(hooks.run_pre_tool_hooks(name, args, conversation_id).blocked)
+            return "ok"
+
+        with patch.object(agent, "_call_tool", new=dispatch):
+            request = ApprovalRequest(conversation_id=self.cid, action_id=action_id, approved=True)
+            self.assertEqual((await approve_action(request)).status, "approved")
+            self.assertEqual((await approve_action(request)).status, "already_resolved")
+        self.assertEqual(observed, [("pip_install", "test-package")])
+
     async def test_trusted_approval_is_scoped_to_exact_action(self):
         args = {"package": "example"}
         with hooks.approved_action("pip_install", args):
@@ -152,6 +214,36 @@ class IsolatedMemoryTest(unittest.IsolatedAsyncioTestCase):
 
 
 class ProviderProtocolTest(unittest.IsolatedAsyncioTestCase):
+    async def test_provider_stall_has_a_bounded_first_event_deadline(self):
+        async def stream(**kwargs):
+            await asyncio.sleep(10)
+            yield {"type": "token", "text": "late"}
+        start = time.perf_counter()
+        with self.assertRaises(TimeoutError):
+            async for _ in orchestrator.stream_with_retry(stream, first_event_timeout=0.02):
+                pass
+        self.assertLess(time.perf_counter() - start, 0.5)
+
+    async def test_failure_after_mutation_is_not_replayed_on_another_model(self):
+        from core.router import RoutingDecision, load_registry
+        registry = load_registry()
+        decision = RoutingDecision("coding", "groq-code", registry["models"]["groq-code"], ["groq-fast"], "test")
+        provider = AsyncMock()
+        provider.is_available = lambda: True
+        call = {"id": "call-1", "name": "run_command", "args": {"command": "echo demo"}}
+        turns = AsyncMock(side_effect=[("", [call]), ("Provider HTTP 401", [])])
+        orchestrator.reset_circuit("groq")
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(agent, "route_async", new=AsyncMock(return_value=decision)), \
+             patch.object(agent, "get_provider", return_value=provider), \
+             patch.object(agent, "_llm_call_with_tools", new=turns), \
+             patch.object(agent, "_call_tool", new=AsyncMock(return_value="✅ demo")) as tool, \
+             patch.object(agent, "LOG_PATH", Path(directory) / "actions.log"):
+            result = await agent.run_task("run a command")
+        self.assertIn("automatic replay was stopped", result["response"])
+        self.assertEqual(turns.await_count, 2)
+        tool.assert_awaited_once()
+
     async def test_google_preserves_function_call_before_response(self):
         provider = GoogleProvider()
         contents = provider._build_contents([
@@ -160,6 +252,17 @@ class ProviderProtocolTest(unittest.IsolatedAsyncioTestCase):
         ], None)
         self.assertEqual(contents[0]["parts"][0]["functionCall"]["args"], {"name": "commit"})
         self.assertEqual(contents[1]["parts"][0]["functionResponse"]["name"], "use_skill")
+
+    async def test_google_retains_signature_and_dynamic_object_schema(self):
+        provider = GoogleProvider()
+        content = provider._build_contents([Message("assistant", "", tool_calls=[{
+            "function": {"name": "create_project", "arguments": "{}"},
+            "thought_signature": "opaque-signature",
+        }])], None)
+        self.assertEqual(content[0]["parts"][0]["thoughtSignature"], "opaque-signature")
+        tools = provider._to_tools(agent.TOOL_SCHEMAS)
+        schema = next(t for t in tools[0]["functionDeclarations"] if t["name"] == "create_project")
+        self.assertEqual(schema["parametersJsonSchema"]["properties"]["files_dict"]["additionalProperties"], {"type": "string"})
 
     async def test_buffered_completion_uses_provider_adapter(self):
         provider = AsyncMock()

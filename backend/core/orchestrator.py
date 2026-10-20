@@ -163,7 +163,7 @@ async def call_with_retry(fn, *, max_retries: int = 2, on_retry=None):
         attempt += 1
 
 
-async def stream_with_retry(stream_fn, *, max_retries: int = 1, **kwargs):
+async def stream_with_retry(stream_fn, *, max_retries: int = 1, first_event_timeout: float = 15, **kwargs):
     """Retry transient failures only before any output has been exposed.
 
     Replaying after a token/tool delta would duplicate output. After output,
@@ -172,15 +172,23 @@ async def stream_with_retry(stream_fn, *, max_retries: int = 1, **kwargs):
     for attempt in range(max_retries + 1):
         emitted = False
         retry_error = None
-        async for event in stream_fn(**kwargs):
-            response = event.get("response") if event.get("type") == "done" else None
-            if (response is not None and not response.success and not emitted
-                    and is_retryable_error(response.error or "") and attempt < max_retries):
-                retry_error = response.error
-                break
-            if event.get("type") in ("token", "tool_call_delta"):
-                emitted = True
-            yield event
+        stream = stream_fn(**kwargs)
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(anext(stream), timeout=45 if emitted else first_event_timeout)
+                except StopAsyncIteration:
+                    break
+                response = event.get("response") if event.get("type") == "done" else None
+                if (response is not None and not response.success and not emitted
+                        and is_retryable_error(response.error or "") and attempt < max_retries):
+                    retry_error = response.error
+                    break
+                if event.get("type") in ("token", "tool_call_delta"):
+                    emitted = True
+                yield event
+        finally:
+            await stream.aclose()
         if retry_error is None:
             return
         await asyncio.sleep(retry_delay_seconds(attempt, retry_error))

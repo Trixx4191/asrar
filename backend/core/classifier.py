@@ -129,6 +129,19 @@ def _keyword_classify(user_input: str) -> ClassifiedTask:
         scores[task_type] = len(hits)
         matched_keywords[task_type] = hits
 
+    # Lead verbs express the requested operation more reliably than incidental
+    # nouns ("summarize this report" is summarization, not document editing).
+    primary = re.sub(r"^(?:(?:please|can you|could you|help me)\s+)+", "", text)
+    intents = (
+        (r"^(?:summari[sz]e|summary|tldr|condense|shorten)\b", "summarization"),
+        (r"^(?:diagnose|troubleshoot)\b|^fix my (?:pc|computer)\b", "pc_diagnosis"),
+        (r"^(?:fix|debug|repair)\b.*\b(?:tests?|ci|code|bug|function|script)\b", "coding"),
+    )
+    for pattern, task_type in intents:
+        if re.search(pattern, primary):
+            scores[task_type] += 4
+            break
+
     best_type = max(scores, key=lambda t: scores[t])
     best_score = scores[best_type]
 
@@ -186,7 +199,7 @@ async def _model_classify(
         registry = load_registry()
         available = get_available_models(registry)
 
-        candidates = ["llama-70b", "mistral-small", "gemini-flash", "claude-haiku"]
+        candidates = ["groq-fast", "llama-70b", "mistral-small", "gemini-flash", "claude-haiku"]
         model_key = None
         for c in candidates:
             if c in available:

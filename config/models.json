@@ -17,9 +17,9 @@
       "priority": 3
     },
     "gemini-flash": {
-      "id": "gemini-2.0-flash",
+      "id": "gemini-3.8-flash",
       "provider": "google",
-      "display_name": "Gemini 2.0 Flash",
+      "display_name": "Gemini 3.8 Flash",
       "api_base": "https://generativelanguage.googleapis.com/v1beta",
       "strengths": [
         "web_research",
@@ -45,7 +45,7 @@
       ],
       "context_window": 128000,
       "free": true,
-      "enabled": true,
+      "enabled": false,
       "priority": 1
     },
     "deepseek-r1": {
@@ -136,6 +136,37 @@
       "enabled": true,
       "priority": 2,
       "added_at": "2026-06-18T23:54:08.531913"
+    },
+    "groq-fast": {
+      "id": "openai/gpt-oss-20b",
+      "provider": "groq",
+      "display_name": "GPT-OSS 20B (Groq)",
+      "api_base": "https://api.groq.com/openai/v1",
+      "strengths": [
+        "fast_chat",
+        "summarization",
+        "general"
+      ],
+      "context_window": 131072,
+      "free": true,
+      "enabled": true,
+      "priority": 2
+    },
+    "groq-code": {
+      "id": "openai/gpt-oss-120b",
+      "provider": "groq",
+      "display_name": "GPT-OSS 120B (Groq)",
+      "api_base": "https://api.groq.com/openai/v1",
+      "strengths": [
+        "coding",
+        "deep_reasoning",
+        "analysis",
+        "shell_automation"
+      ],
+      "context_window": 131072,
+      "free": true,
+      "enabled": true,
+      "priority": 4
     }
   },
   "task_model_map": {
@@ -146,22 +177,23 @@
       "gemini-flash"
     ],
     "coding": [
-      "deepseek-coder",
-      "llama-70b"
+      "groq-code",
+      "deepseek-coder"
     ],
     "document_work": [
       "claude-haiku",
       "gemini-flash"
     ],
     "fast_chat": [
-      "llama-70b",
+      "groq-fast",
       "mistral-small"
     ],
     "pc_diagnosis": [
-      "deepseek-coder",
-      "llama-70b"
+      "groq-code",
+      "deepseek-coder"
     ],
     "shell_automation": [
+      "groq-code",
       "deepseek-coder"
     ],
     "analysis": [
@@ -176,7 +208,7 @@
       "gemini-flash"
     ],
     "general": [
-      "llama-70b",
+      "groq-fast",
       "gemini-flash"
     ]
   }

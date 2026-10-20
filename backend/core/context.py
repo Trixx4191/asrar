@@ -99,7 +99,7 @@ async def _llm_summarize(older: list) -> str | None:
 
         registry = load_registry()
         available = get_available_models(registry)
-        for key in ("llama-70b", "mistral-small", "gemini-flash", "claude-haiku"):
+        for key in ("groq-fast", "llama-70b", "mistral-small", "gemini-flash", "claude-haiku"):
             if key not in available:
                 continue
             model = registry["models"][key]
