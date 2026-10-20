@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "backend" / "core"))
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
@@ -69,3 +70,7 @@ async def root():
 @app.get("/health")
 async def health():
     return {"status": "alive"}
+
+
+if (ROOT / "frontend" / "dist").is_dir():
+    app.mount("/desktop", StaticFiles(directory=ROOT / "frontend" / "dist", html=True), name="desktop")

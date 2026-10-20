@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import ModelBadge from "./ModelBadge";
+import Markdown from "./Markdown";
 import { apiFetch as fetch, api } from "../api";
 
 const API = "http://127.0.0.1:8000";
@@ -57,7 +58,6 @@ function PlanPanel({ items }) {
 
 function Message({ msg, showActivity = true }) {
   const [copied, setCopied] = useState(false);
-  const parts = (msg.content || "").split("```");
 
   return (
     <div className={`message ${msg.role}`}>
@@ -115,11 +115,7 @@ function Message({ msg, showActivity = true }) {
       )}
 
       <div className="message-bubble">
-        {parts.map((part, i) =>
-          i % 2 === 1
-            ? <pre key={i}><code>{part.replace(/^\w+\n/, "")}</code></pre>
-            : <span key={i} style={{ whiteSpace: "pre-wrap" }}>{part}</span>
-        )}
+        {msg.role === "user" ? <span style={{ whiteSpace: "pre-wrap" }}>{msg.content}</span> : <Markdown text={msg.content} />}
         {msg.streaming && <span className="stream-cursor">▋</span>}
       </div>
       {msg.notice && <div className="notice" role="status">{msg.notice}</div>}
@@ -174,7 +170,21 @@ function DiffBlock({ path, diff }) {
   );
 }
 
-function ApprovalBanner({ pending, onDecide }) {
+function QuestionBanner({ pending, onAnswer, busy }) {
+  const [answers, setAnswers] = useState({});
+  return <form className="approval-banner" onSubmit={e => { e.preventDefault(); onAnswer(answers); }}>
+    <strong>Your input is needed</strong>
+    {(pending.questions || []).map(question => <div key={question.id} className="question-field">
+      <label className="field-label">{question.question}
+        <input type={question.isSecret ? "password" : "text"} required maxLength={4000} autoComplete="off" value={answers[question.id] || ""} onChange={e => setAnswers(previous => ({ ...previous, [question.id]: e.target.value }))} />
+      </label>
+      {question.options?.length > 0 && <div className="question-options">{question.options.map(option => <button type="button" key={option.label} className={`secondary-btn ${answers[question.id] === option.label ? "selected" : ""}`} title={option.description} onClick={() => setAnswers(previous => ({ ...previous, [question.id]: option.label }))}>{option.label}<small>{option.description}</small></button>)}</div>}
+    </div>)}
+    <button className="primary-btn" disabled={busy}>{busy ? "Submitting…" : "Continue"}</button>
+  </form>;
+}
+
+function ApprovalBanner({ pending, onDecide, busy }) {
   if (!pending) return null;
   return (
     <div className="approval-banner">
@@ -186,10 +196,10 @@ function ApprovalBanner({ pending, onDecide }) {
       {pending.reason && <p>{pending.reason}</p>}
       {pending.network && <p>Network access: {pending.network.host} ({pending.network.protocol})</p>}
       <div className="approval-banner-actions">
-        <button className="btn-brutal approval-approve" onClick={() => onDecide(true)}>
+        <button className="btn-brutal approval-approve" disabled={busy} onClick={() => onDecide(true)}>
           Approve &amp; run
         </button>
-        <button className="btn-brutal approval-deny" onClick={() => onDecide(false)}>
+        <button className="btn-brutal approval-deny" disabled={busy} onClick={() => onDecide(false)}>
           Deny
         </button>
       </div>
@@ -215,7 +225,8 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
   const [conversations, setConversations] = useState([]);
   const [conversationId, setConversationId] = useState(null);
   const [plan, setPlan]           = useState([]); // current step-by-step plan (update_plan tool)
-  const [pendingApproval, setPendingApproval] = useState(null); // {action_id, command, reason}
+  const [pendingApprovals, setPendingApprovals] = useState([]);
+  const [decisionBusy, setDecisionBusy] = useState(false);
   const [search, setSearch] = useState("");
   const [chatRuntime, setChatRuntime] = useState(null);
   const [lastPrompt, setLastPrompt] = useState("");
@@ -265,7 +276,7 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
       const d = await r.json();
       const conv = d.conversation;
       setChatRuntime(conv.runtime || "api");
-      setPendingApproval(null);
+      setPendingApprovals([]);
       setStatusError("");
       const mapped = (conv.messages || []).map(m => ({
         role: m.role,
@@ -291,7 +302,7 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
     setMessages([]);
     setPlan([]);
     setChatRuntime(null);
-    setPendingApproval(null);
+    setPendingApprovals([]);
     setStatusError("");
     setInput("");
   }
@@ -319,7 +330,7 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
     setStatusError("");
     turnRuntime.current = runtime;
 
-    setPendingApproval(null);
+    setPendingApprovals([]);
 
     const userMsg = { role: "user", content: text, time: now() };
 
@@ -417,8 +428,11 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
           } else if (chunk.codex_diff !== undefined) {
             updateAssistant(m => ({ ...m, diffs: [{ path: "Workspace changes", diff: chunk.codex_diff }] }));
 
+          } else if (chunk.question_required) {
+            setPendingApprovals(previous => [...previous, { action_id: chunk.action_id, questions: chunk.questions, runtime: "codex" }]);
+
           } else if (chunk.approval_resolved) {
-            setPendingApproval(null);
+            setPendingApprovals(previous => previous.filter(action => action.action_id !== chunk.action_id));
 
           } else if (chunk.timing) {
             updateAssistant(m => ({ ...m, timings: chunk }));
@@ -469,14 +483,14 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
 
           } else if (chunk.approval_required) {
             // Human-gated approval for destructive shell / package / git / kill
-            setPendingApproval({
+            setPendingApprovals(previous => [...previous, {
               action_id: chunk.action_id,
               command: chunk.command || chunk.reason || "(action requires approval)",
               reason: chunk.reason,
               runtime: chunk.runtime,
               cwd: chunk.cwd,
               network: chunk.network,
-            });
+            }]);
 
           } else if (chunk.nudge) {
             // Agent finished a reply but left code unverified — it's about
@@ -485,7 +499,7 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
 
           } else if (chunk.done) {
             receivedDone = true;
-            setPendingApproval(null);
+            if (turnRuntime.current === "codex") setPendingApprovals([]);
             // Stream complete — fold any final metadata from the done event
             updateAssistant(m => ({
               ...m,
@@ -542,15 +556,16 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
   }
 
   async function handleApprovalDecision(approved) {
-    const action = pendingApproval;
-    if (!action) return;
-    setPendingApproval(null);
+    const action = pendingApprovals[0];
+    if (!action || decisionBusy) return;
+    setDecisionBusy(true);
 
     try {
       if (action.runtime === "codex") {
         await api("/connections/codex/approve", { method: "POST", body: {
           conversation_id: conversationIdRef.current, action_id: action.action_id, approved,
         } });
+        setPendingApprovals(previous => previous.filter(item => item.action_id !== action.action_id));
         return;
       }
       const res = await fetch(`${API}/chat/approve`, {
@@ -562,7 +577,9 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
           approved,
         }),
       });
+      if (!res.ok) throw new Error("Approval could not be submitted");
       const data = await res.json();
+      setPendingApprovals(previous => previous.filter(item => item.action_id !== action.action_id));
       const text = data.output || (approved ? "Approved." : "Denied.");
       setMessages(prev => [...prev, { role: "assistant", content: text, time: now(), toolCalls: [] }]);
     } catch (e) {
@@ -572,7 +589,20 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
         time: now(),
         toolCalls: [],
       }]);
-    }
+    } finally { setDecisionBusy(false); }
+  }
+
+  async function answerQuestions(answers) {
+    const action = pendingApprovals[0];
+    if (!action || decisionBusy) return;
+    setDecisionBusy(true);
+    try {
+      await api("/connections/codex/answer", { method: "POST", body: {
+        conversation_id: conversationIdRef.current, action_id: action.action_id, answers,
+      } });
+      setPendingApprovals(previous => previous.filter(item => item.action_id !== action.action_id));
+    } catch (e) { setStatusError(e.message); }
+    finally { setDecisionBusy(false); }
   }
 
   async function stop() {
@@ -583,7 +613,7 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
     abortRef.current?.abort();
     setLoading(false);
     updateAssistant(m => ({ ...m, streaming: false }));
-    setPendingApproval(null);
+    setPendingApprovals([]);
   }
 
   function onKey(e) {
@@ -627,6 +657,7 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
       </div>
 
       <div className="chat-container">
+        <div className="mobile-new-chat"><button className="secondary-btn" disabled={loading} onClick={newChat}>+ New chat</button></div>
         <PlanPanel items={plan} />
         {runtimeMismatch && <div className="notice">This chat uses {chatRuntime === "codex" ? "your ChatGPT subscription" : "an API provider"}. Switch back to that connection or start a new chat.</div>}
         <div className="chat-messages">
@@ -646,7 +677,9 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
           <div ref={bottomRef} />
         </div>
 
-        <ApprovalBanner pending={pendingApproval} onDecide={handleApprovalDecision} />
+        {pendingApprovals[0]?.questions
+          ? <QuestionBanner key={pendingApprovals[0].action_id} pending={pendingApprovals[0]} onAnswer={answerQuestions} busy={decisionBusy} />
+          : <ApprovalBanner pending={pendingApprovals[0]} onDecide={handleApprovalDecision} busy={decisionBusy} />}
         {statusError && !loading && <div className="chat-error" role="alert"><span>{statusError}</span>{lastPrompt && <button onClick={() => { setInput(lastPrompt); setStatusError(""); }}>Edit & retry prompt</button>}</div>}
 
         <div className="chat-input-area">
