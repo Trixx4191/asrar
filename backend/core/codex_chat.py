@@ -16,10 +16,10 @@ def session_for(conversation_id):
         return dict(row) if row else None
 
 
-def save_session(conversation_id, thread_id, workspace, scope):
+def save_session(conversation_id, thread_id, workspace, scope, runtime="codex"):
     with memory._conn() as conn:
-        conn.execute("INSERT OR REPLACE INTO runtime_sessions VALUES (?, 'codex', ?, ?, ?)",
-                     (conversation_id, thread_id, workspace, scope))
+        conn.execute("INSERT OR REPLACE INTO runtime_sessions VALUES (?, ?, ?, ?, ?)",
+                     (conversation_id, runtime, thread_id, workspace, scope))
 
 
 async def stream_chat(message, conversation_id, model=None, effort=None, context_files=None):
@@ -73,6 +73,8 @@ async def stream_chat(message, conversation_id, model=None, effort=None, context
         scope = hashlib.sha256(((account.get("email") or "") + marker.read_text()).encode()).hexdigest()
         existing = session_for(conversation_id)
         history = memory.get_messages_full(conversation_id)
+        if existing and existing["runtime"] != "codex":
+            raise CodexError("This chat uses another connection. Start a new chat to use Codex.")
         if existing and (existing["workspace"] != settings.workspace or existing["account_scope"] != scope):
             raise CodexError("This chat belongs to another workspace or account session. Start a new chat to continue.")
         if not existing and history:

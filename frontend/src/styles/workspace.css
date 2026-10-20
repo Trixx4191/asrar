@@ -38,7 +38,8 @@ body::before { display: none; }
 .sidebar-account > span:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .sidebar-account small { display: block; margin-top: 5px; color: var(--text-muted); text-transform: capitalize; }
 .version-label { display: block; padding: 14px 8px 0; color: var(--text-muted); font-size: 10px; }
-.status-dot.online { background: var(--green); }
+.sidebar-account .status-dot { background: var(--text-muted); box-shadow: none; }
+.sidebar-account .status-dot.online { background: var(--green); }
 .status-bar { border-top: 1px solid var(--border-soft); background: var(--void); font-size: 10px; min-height: 27px; }
 .status-runtime { margin-left: auto; color: var(--text-muted); }
 .main-content { background: var(--bg-base); overflow: hidden; }
@@ -218,3 +219,6 @@ progress::-moz-progress-bar { background: var(--accent); }
 .context-input { display: flex; gap: 8px; margin-bottom: 10px; }
 .context-input input { min-width: 0; flex: 1; border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px; font-size: 11px; }
 .attach-button { font-size: 10px; color: var(--text-secondary); }
+.claude-mark { color: #d9aa91; background: #d9aa9112; }
+.claude-code-form { margin-top: 20px; }
+.claude-code-form .secondary-btn { margin-top: 12px; }

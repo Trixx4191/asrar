@@ -28,9 +28,11 @@ class ChatRequest(BaseModel):
     conversation_id: str | None = None
     history: list[dict] = []
     force_model: str | None = None
-    runtime: Literal["api", "codex"] = "api"
+    runtime: Literal["api", "codex", "claude"] = "api"
     codex_model: str | None = None
     reasoning_effort: str | None = None
+    claude_model: str | None = None
+    claude_effort: str | None = None
     context_files: list[str] = Field(default_factory=list, max_length=8)
 
 
@@ -38,8 +40,9 @@ def check_conversation(conversation_id, runtime):
     from core.codex_chat import session_for
     if conversation_id and not memory.get_conversation(conversation_id):
         raise HTTPException(404, "Conversation not found")
-    if conversation_id and runtime == "api" and session_for(conversation_id):
-        raise HTTPException(409, "This chat uses your ChatGPT subscription. Start a new chat to use an API connection.")
+    session = session_for(conversation_id) if conversation_id else None
+    if session and session["runtime"] != runtime:
+        raise HTTPException(409, "This chat uses another connection. Start a new chat to switch connections.")
 
 
 class ChatResponse(BaseModel):
@@ -55,8 +58,8 @@ class ChatResponse(BaseModel):
 async def chat(req: ChatRequest):
     """Non-streaming chat — shared agent loop."""
     check_conversation(req.conversation_id, req.runtime)
-    if req.runtime == "codex":
-        raise HTTPException(400, "Use /chat/stream for Codex tasks and interactive approvals")
+    if req.runtime != "api":
+        raise HTTPException(400, "Use /chat/stream for subscription tasks and interactive approvals")
     conversation_id = req.conversation_id or memory.create_conversation(
         title=memory.auto_title(req.message)
     )
@@ -141,7 +144,7 @@ async def approve_action(req: ApprovalRequest):
 async def chat_stream(req: ChatRequest, x_asrar_client: str | None = Header(default=None)):
     """SSE streaming — thin wrapper around shared run_task_stream."""
     check_conversation(req.conversation_id, req.runtime)
-    if req.runtime == "codex" and x_asrar_client != "desktop-v1":
+    if req.runtime != "api" and x_asrar_client != "desktop-v1":
         raise HTTPException(403, "Use the Asrār desktop client")
 
     async def generator():
@@ -149,6 +152,12 @@ async def chat_stream(req: ChatRequest, x_asrar_client: str | None = Header(defa
             title=memory.auto_title(req.message)
         )
         yield f"data: {json.dumps({'conversation_id': conversation_id})}\n\n"
+
+        if req.runtime == "claude":
+            from core.claude_chat import stream_chat as claude_stream
+            async for event in claude_stream(req.message, conversation_id, req.claude_model, req.claude_effort, req.context_files):
+                yield f"data: {json.dumps(event)}\n\n"
+            return
 
         if req.runtime == "codex":
             from core.codex_chat import stream_chat

@@ -95,6 +95,11 @@ release; their supported API connections remain available. This release verifies
 the local source/development build; a standalone installer with a bundled Python
 runtime is a separate distribution task.
 
+The dependency installation audit reported 26 findings in the existing frontend
+dependency tree (6 moderate, 18 high, 2 critical). A dependency-security upgrade,
+particularly the older Electron/build stack, is still outstanding; this release
+does not claim that those audit findings were resolved.
+
 ## References
 
 - [Codex App Server protocol](https://learn.chatgpt.com/docs/app-server)

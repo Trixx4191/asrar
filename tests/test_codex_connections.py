@@ -205,6 +205,15 @@ class SubscriptionTest(unittest.IsolatedAsyncioTestCase):
             await self.bridge.logout()
         await stream.aclose()
 
+    async def test_login_can_be_cancelled_and_blocks_new_tasks(self):
+        login = await self.bridge.begin_login()
+        self.assertEqual(login["loginId"], "login-test")
+        events = await self.collect()
+        self.assertIn("pending sign-in", events[0]["error"])
+        await self.bridge.cancel_login()
+        self.assertIsNone(self.bridge.login)
+        self.assertTrue((await self.collect())[-1]["done"])
+
     async def test_local_api_origin_guards_and_preferences(self):
         from api.server import app
         from api.routes import connections
