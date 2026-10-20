@@ -21,6 +21,8 @@ def _frontmatter(text: str) -> dict[str, str]:
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         return {}
+    if "---" not in [line.strip() for line in lines[1:]]:
+        return {}
 
     values: dict[str, str] = {}
     for line in lines[1:]:
@@ -36,6 +38,8 @@ def _frontmatter(text: str) -> dict[str, str]:
 def _read_skill(path: Path) -> dict | None:
     if not path.is_file() or path.name != "SKILL.md":
         return None
+    if not path.resolve().is_relative_to(SKILLS_ROOT.resolve()):
+        return None
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
@@ -43,7 +47,7 @@ def _read_skill(path: Path) -> dict | None:
 
     metadata = _frontmatter(text)
     name = metadata.get("name", "").strip()
-    if not name or name != path.parent.name:
+    if not _SAFE_NAME.fullmatch(name) or name != path.parent.name or not metadata.get("description"):
         return None
 
     return {
@@ -72,3 +76,28 @@ def load_skill(name: str) -> dict[str, str] | None:
     if not isinstance(name, str) or not _SAFE_NAME.fullmatch(name):
         return None
     return _read_skill(SKILLS_ROOT / name / "SKILL.md")
+
+
+def prompt_context(user_input: str, max_chars: int = 8000) -> tuple[str, list[str]]:
+    """Expose descriptions cheaply; load full instructions only on explicit invocation.
+
+    Implicit selection is performed by the main model using use_skill, avoiding
+    a second classifier request and avoiding loading unrelated playbooks.
+    """
+    catalog = list_skills()
+    lines = ["Available workflow skills (load with use_skill before applying):"]
+    used = len(lines[0])
+    for skill in catalog:
+        line = f"- {skill['name']}: {skill['description'][:240]}"
+        if used + len(line) > max_chars:
+            lines.append("Additional skills are available through list_skills.")
+            break
+        lines.append(line)
+        used += len(line) + 1
+    loaded = []
+    for name in dict.fromkeys(re.findall(r"(?<!\w)[$/]([A-Za-z0-9][A-Za-z0-9_-]*)(?![\w/-])", user_input)):
+        skill = load_skill(name)
+        if skill:
+            loaded.append(name)
+            lines.append(f"\nExplicitly requested skill: {name}\n{skill['content']}")
+    return "\n".join(lines), loaded

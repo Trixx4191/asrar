@@ -1,18 +1,10 @@
 ---
 name: fix-ci
-description: Fix the failed CI checks for the current session. Use when the user requests a CI fix via the Fix Checks button in the Changes toolbar.
+description: Investigate and fix failed continuous integration checks using supplied logs or an authenticated GitHub CLI.
 ---
-<!-- Customize this skill and select save to override its behavior. Delete that copy to restore the built-in behavior. -->
 
 # Fix CI
 
-Please fix the failed CI checks for this session immediately.
+Start from the failed job output supplied by the user. For a linked GitHub PR, use run_command with gh pr checks and gh run view --log-failed only if gh is installed and authenticated. If remote logs are unavailable, explain what is missing and reproduce locally using the repository’s documented commands.
 
-Use the failed check information provided with this message, including annotations and check output, to identify the root causes and make the necessary code changes.
-
-## Workflow
-
-1. Read the failed check information attached to this message. It includes a link to the pull request, and for each failed check the check name, status, conclusion, a details URL, and any annotations or output.
-2. Use the annotations and output to identify the root cause of each failure (e.g. compile errors, lint/hygiene violations, failing tests).
-3. Make the necessary code changes to resolve the failures. Focus on resolving these CI failures and avoid unrelated changes unless they are required to fix the checks.
-4. Validate your changes locally where possible (e.g. compile, lint, run the relevant tests) to confirm the failures are addressed.
+Use search_code/read_file to identify the cause, edit_file for focused fixes, and run_tests for meaningful local verification. Report which failures were reproduced and checked. Do not claim remote CI passed based only on local tests. Do not push changes unless requested.

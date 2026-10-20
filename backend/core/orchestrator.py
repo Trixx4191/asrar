@@ -125,7 +125,7 @@ _RETRY_AFTER_RE = re.compile(r"retry-after=(\d+(?:\.\d+)?)")
 
 
 def is_provider_error(text: str) -> bool:
-    return isinstance(text, str) and text.strip().startswith("Provider HTTP")
+    return isinstance(text, str) and text.strip().startswith(("Provider HTTP", "Provider error:"))
 
 
 def is_retryable_error(text: str) -> bool:
@@ -161,6 +161,29 @@ async def call_with_retry(fn, *, max_retries: int = 2, on_retry=None):
             on_retry(attempt, delay, text)
         await asyncio.sleep(delay)
         attempt += 1
+
+
+async def stream_with_retry(stream_fn, *, max_retries: int = 1, **kwargs):
+    """Retry transient failures only before any output has been exposed.
+
+    Replaying after a token/tool delta would duplicate output. After output,
+    surface the failure to the caller instead.
+    """
+    for attempt in range(max_retries + 1):
+        emitted = False
+        retry_error = None
+        async for event in stream_fn(**kwargs):
+            response = event.get("response") if event.get("type") == "done" else None
+            if (response is not None and not response.success and not emitted
+                    and is_retryable_error(response.error or "") and attempt < max_retries):
+                retry_error = response.error
+                break
+            if event.get("type") in ("token", "tool_call_delta"):
+                emitted = True
+            yield event
+        if retry_error is None:
+            return
+        await asyncio.sleep(retry_delay_seconds(attempt, retry_error))
 
 
 # ─────────────────────────────────────────────────────────────

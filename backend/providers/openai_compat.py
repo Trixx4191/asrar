@@ -7,6 +7,7 @@ import json
 from typing import AsyncIterator, Any
 
 import httpx
+from .transport import provider_error, request_timeout
 
 from .base import Message, ProviderResponse
 
@@ -50,7 +51,7 @@ async def openai_complete(
         body["temperature"] = temperature
 
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=request_timeout(timeout)) as client:
             r = await client.post(f"{base_url}/chat/completions", headers=headers, json=body)
             r.raise_for_status()
             data = r.json()
@@ -94,7 +95,7 @@ async def openai_complete(
         )
     except Exception as e:
         return ProviderResponse(
-            content="", model_id=model_id, provider=provider_name, success=False, error=str(e)
+            content="", model_id=model_id, provider=provider_name, success=False, error=provider_error(e)
         )
 
 
@@ -139,7 +140,7 @@ async def openai_stream(
     text = ""
     tool_calls_acc: dict[int, dict] = {}
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=request_timeout(timeout)) as client:
             async with client.stream(
                 "POST", f"{base_url}/chat/completions", headers=headers, json=body
             ) as resp:
@@ -180,7 +181,7 @@ async def openai_stream(
         yield {
             "type": "done",
             "response": ProviderResponse(
-                content="", model_id=model_id, provider=provider_name, success=False, error=str(e)
+                content="", model_id=model_id, provider=provider_name, success=False, error=provider_error(e)
             ),
         }
         return

@@ -11,6 +11,8 @@ _INSTANCES: Dict[str, BaseProvider] = {}
 def _load_provider_map():
     # Import providers lazily to avoid import overhead when not needed
     provs = {}
+    from .mistral import MistralProvider
+    provs[MistralProvider.name] = MistralProvider
     try:
         from .openrouter import OpenRouterProvider
         provs[OpenRouterProvider.name] = OpenRouterProvider

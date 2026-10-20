@@ -9,6 +9,8 @@ a lightweight model call re-classifies with history awareness.
 from __future__ import annotations
 
 import json
+import asyncio
+import os
 import logging
 import re
 from dataclasses import dataclass, field
@@ -123,7 +125,7 @@ def _keyword_classify(user_input: str) -> ClassifiedTask:
     matched_keywords: dict[str, list[str]] = {}
 
     for task_type, keywords in TASK_SIGNALS.items():
-        hits = [kw for kw in keywords if kw in text]
+        hits = [kw for kw in keywords if re.search(r"(?<!\w)" + re.escape(kw) + r"(?!\w)", text)]
         scores[task_type] = len(hits)
         matched_keywords[task_type] = hits
 
@@ -259,7 +261,17 @@ async def classify_task_async(
     """
     kw = _keyword_classify(user_input)
 
-    if force_keyword:
+    # Routing must not add an LLM round trip to every user message. Hybrid
+    # classification is opt-in and bounded independently of provider timeouts.
+    if force_keyword or os.getenv("ASRAR_ROUTING_MODE", "fast").lower() != "hybrid":
+        if kw.task_type == "general" and history and len(user_input.split()) <= 8:
+            for message in reversed(history):
+                if message.get("role") == "user":
+                    previous = _keyword_classify(str(message.get("content") or ""))
+                    if previous.task_type != "general":
+                        previous.raw_input = user_input
+                        previous.reason = "Short follow-up: retained recent user task type"
+                        return previous
         return kw
 
     has_context = bool(history and len(history) >= 2)
@@ -268,7 +280,11 @@ async def classify_task_async(
     if not needs_model:
         return kw
 
-    model_result = await _model_classify(user_input, history=history)
+    try:
+        timeout = max(0.05, min(float(os.getenv("ASRAR_ROUTING_TIMEOUT", "1.5")), 5.0))
+        model_result = await asyncio.wait_for(_model_classify(user_input, history=history), timeout)
+    except (TimeoutError, ValueError):
+        return kw
     if model_result is None:
         return kw
 

@@ -1,16 +1,10 @@
 ---
 name: update-pr
-description: Update the pull request for the current session. Use when the user wants to push new changes to an existing PR.
+description: Update the commits or description of an existing GitHub pull request at the user’s request.
 ---
-<!-- Customize this skill and select save to override its behavior. Delete that copy to restore the built-in behavior. -->
 
 # Update Pull Request
 
-Update the existing pull request for the current session.
-The context block appended to the prompt contains the pull request information.
+Identify the PR from the conversation or authenticated gh pr view through run_command. Inspect local changes, branch tracking, and incoming commits. Preserve unrelated work and resolve only understood conflicts. Run relevant checks; use use_skill with name commit when a requested commit is needed.
 
-1. Check whether the pull request has any commits that are not yet present on the current branch (incoming changes). If there are any incoming changes, pull them into the current branch and resolve any merge conflicts
-2. Run the compile and hygiene tasks (fixing any errors)
-3. If there are any uncommitted changes, use the `/commit` skill to commit them
-4. If the outgoing changes introduce significant changes to the pull request, update the pull request title and description to reflect those changes
-5. Update the pull request with the new commits and information
+Push only within the requested update, without force. Update the title/body with gh pr edit when the scope has changed, using a body file for multiline text. Report the PR URL and validation. Asrār does not receive an automatic PR context block; ask for the target when it cannot be determined.

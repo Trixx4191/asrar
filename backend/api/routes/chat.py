@@ -112,7 +112,9 @@ async def approve_action(req: ApprovalRequest):
     else:
         # Re-dispatch gated tools (pip_install, npm_install, git_commit, kill_process, …)
         from core.agent import _call_tool
-        output = await _call_tool(tool, args, conversation_id=req.conversation_id)
+        from core.hooks import approved_action
+        with approved_action(tool, args):
+            output = await _call_tool(tool, args, conversation_id=req.conversation_id)
         note = f"✅ Approved `{tool}`:\n{output}"
 
     memory.add_message(req.conversation_id, "assistant", note)

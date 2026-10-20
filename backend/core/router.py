@@ -79,14 +79,14 @@ def _build_decision(
                 classification_source=task.source,
                 confidence=task.confidence,
             )
+        raise RuntimeError(f"Selected model '{force_model}' is disabled, unknown, or missing its API key")
 
     task_map = registry["task_model_map"]
     preferred = task_map.get(task.task_type, task_map.get("general", []))
 
     all_available = sorted(
         [k for k in available],
-        key=lambda k: registry["models"][k].get("priority", 0),
-        reverse=True,
+        key=lambda k: (-registry["models"][k].get("priority", 0), k),
     )
 
     fallback_chain: list[str] = []
@@ -138,5 +138,5 @@ async def route_async(
     """Async route with hybrid classification + conversation context."""
     registry = load_registry()
     available = get_available_models(registry)
-    task = await classify_task_async(user_input, history=history)
+    task = classify_task(user_input) if force_model else await classify_task_async(user_input, history=history)
     return _build_decision(task, registry, available, force_model)

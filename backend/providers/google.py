@@ -7,6 +7,7 @@ import json
 from typing import AsyncIterator
 
 import httpx
+from .transport import provider_error, request_timeout
 
 from .base import BaseProvider, Message, ProviderResponse, ProviderCapabilities
 
@@ -50,7 +51,15 @@ class GoogleProvider(BaseProvider):
                     }],
                 })
             elif m.role == "assistant":
-                contents.append({"role": "model", "parts": [{"text": m.content or ""}]})
+                parts = [{"text": m.content}] if m.content else []
+                for call in m.tool_calls or []:
+                    fn = call.get("function", {})
+                    arguments = fn.get("arguments", "{}")
+                    parts.append({"functionCall": {
+                        "name": fn.get("name") or call.get("name"),
+                        "args": json.loads(arguments) if isinstance(arguments, str) else arguments,
+                    }})
+                contents.append({"role": "model", "parts": parts or [{"text": ""}]})
             else:
                 contents.append({"role": "user", "parts": [{"text": m.content or ""}]})
         return contents
@@ -90,7 +99,7 @@ class GoogleProvider(BaseProvider):
 
         url = f"{self.base_url}/models/{model_id}:generateContent?key={self.api_key}"
         try:
-            async with httpx.AsyncClient(timeout=90) as client:
+            async with httpx.AsyncClient(timeout=request_timeout()) as client:
                 r = await client.post(url, json=body)
                 r.raise_for_status()
                 data = r.json()
@@ -122,7 +131,7 @@ class GoogleProvider(BaseProvider):
             )
         except Exception as e:
             return ProviderResponse(
-                content="", model_id=model_id, provider=self.name, success=False, error=str(e)
+                content="", model_id=model_id, provider=self.name, success=False, error=provider_error(e)
             )
 
     async def stream_complete(
@@ -151,7 +160,7 @@ class GoogleProvider(BaseProvider):
         text = ""
         tool_calls = []
         try:
-            async with httpx.AsyncClient(timeout=90) as client:
+            async with httpx.AsyncClient(timeout=request_timeout()) as client:
                 async with client.stream("POST", url, json=body) as resp:
                     resp.raise_for_status()
                     async for line in resp.aiter_lines():
@@ -187,7 +196,7 @@ class GoogleProvider(BaseProvider):
                 "type": "done",
                 "response": ProviderResponse(
                     content="", model_id=model_id, provider=self.name,
-                    success=False, error=str(e),
+                    success=False, error=provider_error(e),
                 ),
             }
             return

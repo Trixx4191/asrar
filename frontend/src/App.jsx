@@ -3,12 +3,14 @@ import Chat from "./components/Chat";
 import ModelRegistry from "./components/ModelRegistry";
 import TaskHistory from "./components/TaskHistory";
 import Settings from "./components/Settings";
+import Skills from "./components/Skills";
 
 const API = "http://127.0.0.1:8000";
 
 const NAV = [
   { id: "chat",     icon: "◈", label: "Chat" },
   { id: "models",   icon: "⬡", label: "Models" },
+  { id: "skills",   icon: "◇", label: "Skills" },
   { id: "history",  icon: "◷", label: "History" },
   { id: "settings", icon: "◎", label: "Settings" },
 ];
@@ -108,6 +110,7 @@ export default function App() {
         <div className="main-content">
           {view === "chat"     && <Chat forceModel={forceModel} models={models} onForceModelChange={setForceModel} />}
           {view === "models"   && <ModelRegistry />}
+          {view === "skills"   && <Skills />}
           {view === "history"  && <TaskHistory />}
           {view === "settings" && <Settings agentName={agentName} onRename={setAgentName} />}
         </div>
