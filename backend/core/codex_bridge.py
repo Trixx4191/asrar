@@ -175,7 +175,7 @@ class CodexBridge:
             queue.put_nowait({"method": method, "params": params})
 
     async def account(self):
-        result = await self.request("account/read", {"refreshToken": True})
+        result = await self.request("account/read", {"refreshToken": False})
         raw = result.get("account")
         if not raw or raw.get("type") != "chatgpt":
             return None
