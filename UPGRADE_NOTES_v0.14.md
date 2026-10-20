@@ -41,6 +41,9 @@ bundled CLI. Asrār never installs or updates the runtime during a chat request.
 - Chats can be searched, copied, and reopened; replies render headings, lists,
   tables, code blocks, and secure links. Starter prompts, keyboard shortcuts,
   readable error messages, retry editing, and responsive themes improve navigation.
+- Add up to eight workspace files as context with the desktop picker or relative
+  paths in browser mode. Resolved paths, including symlinks, must stay inside
+  the selected workspace. Export conversations as Markdown from the chat toolbar.
 - **Ctrl/Cmd+Shift+O** starts a new chat. **Ctrl/Cmd+Enter** always sends.
 - Switching workspace, runtime, or signed-in account requires a new conversation
   to avoid silently mixing histories. Existing API conversations remain readable.
@@ -67,7 +70,7 @@ multi-user server authentication. Do not expose this backend publicly.
 
 Read-only/workspace permissions are enforced by Codex's sandbox and its managed
 policies. Permission controls do not claim to restrict a trusted command after
-the user explicitly approves an escalation. Web search is disabled by default;
+the user explicitly approves an escalation. Web search is disabled by default, with cached/live search options in Settings;
 workspace networking is configured separately. No unrestricted access preset is
 exposed by Asrār.
 

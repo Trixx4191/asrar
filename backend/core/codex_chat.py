@@ -38,9 +38,7 @@ async def stream_chat(message, conversation_id, model=None, effort=None, context
     persisted = False
     model_name = model or "Codex"
     try:
-        account = await bridge.account()
-        if not account:
-            raise CodexError("Connect your ChatGPT account in Accounts before sending a task")
+        account = await bridge.require_account()
         settings = load_preferences()
         if context_files:
             files = []
@@ -87,7 +85,7 @@ async def stream_chat(message, conversation_id, model=None, effort=None, context
                          "developerInstructions": "You are Asrār, a local coding assistant powered by Codex. "
                          "Explain your work clearly, respect the selected workspace, and verify edits when appropriate.\n" + settings.instructions}
         if existing:
-            await bridge.request("thread/resume", {**thread_params, "threadId": existing["thread_id"]})
+            await bridge.request("thread/resume", {**thread_params, "threadId": existing["thread_id"], "excludeTurns": True})
             thread_id = existing["thread_id"]
         else:
             result = await bridge.request("thread/start", thread_params)
@@ -124,6 +122,9 @@ async def stream_chat(message, conversation_id, model=None, effort=None, context
                 yield {"notice": data["message"]}
             elif method == "item/agentMessage/delta":
                 identifier = data.get("itemId", "message")
+                if identifier not in items and text:
+                    text += "\n\n"
+                    yield {"token": "\n\n"}
                 items[identifier] = items.get(identifier, "") + data.get("delta", "")
                 text += data.get("delta", "")
                 yield {"token": data.get("delta", "")}
@@ -196,8 +197,10 @@ async def stream_chat(message, conversation_id, model=None, effort=None, context
         yield {"error": str(exc)}
     finally:
         if not finished:
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(bridge.interrupt(conversation_id), 5)
+            cancellation = bridge.schedule_interrupt(conversation_id)
+            if cancellation:
+                with contextlib.suppress(Exception, asyncio.CancelledError):
+                    await asyncio.shield(cancellation)
             if text and not persisted:
                 memory.add_message(conversation_id, "assistant", text + "\n\nTask interrupted.",
                                    model=model_name, task_type="coding", tool_calls=tools)

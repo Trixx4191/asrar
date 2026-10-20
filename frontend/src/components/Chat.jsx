@@ -622,7 +622,6 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
       catch (e) { setStatusError(`Could not confirm stop: ${e.message}`); }
     }
     abortRef.current?.abort();
-    setLoading(false);
     updateAssistant(m => ({ ...m, streaming: false }));
     setPendingApprovals([]);
   }
