@@ -332,12 +332,12 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
   async function send() {
     const text = input.trim();
     if (!text || loading || !preferences || runtimeMismatch) return;
-    if (runtime === "codex" && !connection?.connected) { onConnect?.(); return; }
+    if (runtime !== "api" && !connection?.connected) { onConnect?.(); return; }
     setLastPrompt(text);
     setStatusError("");
     turnRuntime.current = runtime;
     stickToBottom.current = true;
-    const attached = runtime === "codex" ? contextFiles : [];
+    const attached = runtime !== "api" ? contextFiles : [];
 
     setPendingApprovals([]);
 
@@ -378,6 +378,8 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
           codex_model: preferences?.codex_model || null,
           reasoning_effort: preferences?.reasoning_effort || null,
           context_files: attached,
+          claude_model: preferences?.claude_model || null,
+          claude_effort: preferences?.claude_effort || null,
         }),
         signal: controller.signal,
       });
@@ -439,7 +441,7 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
             updateAssistant(m => ({ ...m, diffs: [{ path: "Workspace changes", diff: chunk.codex_diff }] }));
 
           } else if (chunk.question_required) {
-            setPendingApprovals(previous => [...previous, { action_id: chunk.action_id, questions: chunk.questions, runtime: "codex" }]);
+            setPendingApprovals(previous => [...previous, { action_id: chunk.action_id, questions: chunk.questions, runtime: chunk.runtime || "codex" }]);
 
           } else if (chunk.approval_resolved) {
             setPendingApprovals(previous => previous.filter(action => action.action_id !== chunk.action_id));
@@ -510,7 +512,7 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
           } else if (chunk.done) {
             receivedDone = true;
             setContextFiles([]);
-            if (turnRuntime.current === "codex") setPendingApprovals([]);
+            if (turnRuntime.current !== "api") setPendingApprovals([]);
             // Stream complete — fold any final metadata from the done event
             updateAssistant(m => ({
               ...m,
@@ -572,8 +574,8 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
     setDecisionBusy(true);
 
     try {
-      if (action.runtime === "codex") {
-        await api("/connections/codex/approve", { method: "POST", body: {
+      if (action.runtime === "codex" || action.runtime === "claude") {
+        await api(`/connections/${action.runtime}/approve`, { method: "POST", body: {
           conversation_id: conversationIdRef.current, action_id: action.action_id, approved,
         } });
         setPendingApprovals(previous => previous.filter(item => item.action_id !== action.action_id));
@@ -608,7 +610,7 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
     if (!action || decisionBusy) return;
     setDecisionBusy(true);
     try {
-      await api("/connections/codex/answer", { method: "POST", body: {
+      await api(`/connections/${action.runtime}/answer`, { method: "POST", body: {
         conversation_id: conversationIdRef.current, action_id: action.action_id, answers,
       } });
       setPendingApprovals(previous => previous.filter(item => item.action_id !== action.action_id));
@@ -617,8 +619,8 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
   }
 
   async function stop() {
-    if (turnRuntime.current === "codex" && conversationIdRef.current) {
-      try { await api("/connections/codex/stop", { method: "POST", body: { conversation_id: conversationIdRef.current } }); }
+    if (turnRuntime.current !== "api" && conversationIdRef.current) {
+      try { await api(`/connections/${turnRuntime.current}/stop`, { method: "POST", body: { conversation_id: conversationIdRef.current } }); }
       catch (e) { setStatusError(`Could not confirm stop: ${e.message}`); }
     }
     abortRef.current?.abort();
@@ -683,10 +685,10 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
       </div>
 
       <div className="chat-container">
-        {messages.length > 0 && <div className="conversation-actions"><button disabled={loading} onClick={exportConversation}>Export chat ↓</button><span>{chatRuntime === "codex" ? "ChatGPT subscription" : chatRuntime === "api" ? "API conversation" : ""}</span></div>}
+        {messages.length > 0 && <div className="conversation-actions"><button disabled={loading} onClick={exportConversation}>Export chat ↓</button><span>{chatRuntime === "codex" ? "ChatGPT subscription" : chatRuntime === "claude" ? "Claude subscription" : chatRuntime === "api" ? "API conversation" : ""}</span></div>}
         <div className="mobile-new-chat"><button className="secondary-btn" disabled={loading} onClick={newChat}>+ New chat</button></div>
         <PlanPanel items={plan} />
-        {runtimeMismatch && <div className="notice">This chat uses {chatRuntime === "codex" ? "your ChatGPT subscription" : "an API provider"}. Switch back to that connection or start a new chat.</div>}
+        {runtimeMismatch && <div className="notice">This chat uses {chatRuntime === "codex" ? "your ChatGPT subscription" : chatRuntime === "claude" ? "your Claude subscription" : "an API provider"}. Switch back to that connection or start a new chat.</div>}
         <div className="chat-messages" onScroll={event => {
           const element = event.currentTarget;
           const near = element.scrollHeight - element.scrollTop - element.clientHeight < 100;
@@ -698,7 +700,7 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
               <div className="eyebrow">A SPACE FOR YOUR NEXT IDEA</div>
               <div className="chat-empty-title">What shall we work on?</div>
               <div className="chat-empty-hint">
-                {runtime === "codex" ? "Explore your project, understand a problem, or build something together." : "Work with your configured API providers."}
+                {runtime !== "api" ? "Explore your project, understand a problem, or build something together." : "Work with your configured API providers."}
               </div>
               <div className="starter-grid">{["Explain this codebase and how its pieces fit together", "Review this project for bugs and suggest improvements", "Help me plan and build a new feature"].map(prompt => <button key={prompt} onClick={() => setInput(prompt)}>{prompt}<span>↗</span></button>)}</div>
             </div>
@@ -715,8 +717,8 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
         {statusError && (!loading || pendingApprovals.length > 0) && <div className="chat-error" role="alert"><span>{statusError}</span>{lastPrompt && !loading && <button onClick={() => { setInput(lastPrompt); setStatusError(""); }}>Edit & retry prompt</button>}</div>}
 
         <div className="chat-input-area">
-          {runtime === "codex" && contextFiles.length > 0 && <div className="context-files">{contextFiles.map(file => <span key={file} title={file}>{file.split(/[\\/]/).pop()}<button aria-label={`Remove ${file}`} disabled={loading} onClick={() => setContextFiles(previous => previous.filter(value => value !== file))}>✕</button></span>)}</div>}
-          {showContextInput && runtime === "codex" && <div className="context-input"><input aria-label="Workspace file path" placeholder="Path relative to your workspace" value={contextPath} onChange={e => setContextPath(e.target.value)} /><button className="secondary-btn" disabled={!contextPath.trim() || loading || contextFiles.length >= 8} onClick={() => { setContextFiles(previous => [...new Set([...previous, contextPath.trim()])].slice(0, 8)); setContextPath(""); setShowContextInput(false); }}>Add file</button></div>}
+          {runtime !== "api" && contextFiles.length > 0 && <div className="context-files">{contextFiles.map(file => <span key={file} title={file}>{file.split(/[\\/]/).pop()}<button aria-label={`Remove ${file}`} disabled={loading} onClick={() => setContextFiles(previous => previous.filter(value => value !== file))}>✕</button></span>)}</div>}
+          {showContextInput && runtime !== "api" && <div className="context-input"><input aria-label="Workspace file path" placeholder="Path relative to your workspace" value={contextPath} onChange={e => setContextPath(e.target.value)} /><button className="secondary-btn" disabled={!contextPath.trim() || loading || contextFiles.length >= 8} onClick={() => { setContextFiles(previous => [...new Set([...previous, contextPath.trim()])].slice(0, 8)); setContextPath(""); setShowContextInput(false); }}>Add file</button></div>}
           <div className="chat-input-row">
             <textarea
               className="chat-textarea"
@@ -736,9 +738,9 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
             </div>
           </div>
           <div className="input-hint">
-            {runtime === "codex" && <button className="attach-button" disabled={loading || contextFiles.length >= 8 || runtimeMismatch} onClick={addContext}>+ Add workspace file</button>}
+            {runtime !== "api" && <button className="attach-button" disabled={loading || contextFiles.length >= 8 || runtimeMismatch} onClick={addContext}>+ Add workspace file</button>}
             {preferences?.enter_to_send ? "Enter to send · Shift+Enter for new line" : "Ctrl/Cmd+Enter to send"}{loading ? " · Stop cancels the running task" : ""}
-            <span>{runtime === "codex" ? "Codex · subscription" : "API · provider billing"}</span>
+            <span>{runtime === "codex" ? "Codex · subscription" : runtime === "claude" ? "Claude Code · subscription" : "API · provider billing"}</span>
           </div>
         </div>
       </div>

@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { api, openExternal } from "../api";
+import ClaudeConnection from "./ClaudeConnection";
 
-export default function Connections({ connection, refresh, onUseCodex, onOpenModels }) {
+export default function Connections({ connection, refresh, onUseCodex, onOpenModels, claudeConnection, refreshClaude, onUseClaude }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [login, setLogin] = useState(null);
@@ -38,7 +39,7 @@ export default function Connections({ connection, refresh, onUseCodex, onOpenMod
   }
   const buckets = usage?.rateLimitsByLimitId || (usage?.rateLimits ? { codex: usage.rateLimits } : {});
   return <div className="panel connections-page">
-    <div className="panel-header"><div className="eyebrow">YOUR AI, CONNECTED</div><h1>Accounts & connections</h1><p>Bring your ChatGPT plan. Keep your work in Asrār.</p></div>
+    <div className="panel-header"><div className="eyebrow">YOUR AI, CONNECTED</div><h1>Accounts & connections</h1><p>Connect your ChatGPT or Claude plan. Keep your work in Asrār.</p></div>
     <div className="panel-body">
       <section className="connection-card featured">
         <div className="connection-card-top"><div className="provider-mark">◎</div><div><h2>ChatGPT</h2><p>Powered by the official Codex runtime</p></div><span className={`connection-status ${signedIn ? "connected" : ""}`}>{signedIn ? "Connected" : "Not connected"}</span></div>
@@ -65,7 +66,8 @@ export default function Connections({ connection, refresh, onUseCodex, onOpenMod
         {!Object.keys(buckets).length && <p>{usageError || "Usage details are not available yet."}</p>}
         {usageError && Object.keys(buckets).length > 0 && <div className="notice">{usageError}</div>}
       </section>}
-      <section className="connection-card"><div className="connection-card-top"><div className="provider-mark muted">⌘</div><div><h2>Other model providers</h2><p>Optional API connections</p></div><span className="pill">Separate billing</span></div><p>Your existing providers are still available in API mode. Subscription sign-in is currently implemented for ChatGPT through Codex; other providers use their supported API connections.</p><button className="secondary-btn" onClick={onOpenModels}>Manage API models →</button></section>
+      <ClaudeConnection connection={claudeConnection} refresh={refreshClaude} onUse={onUseClaude} />
+      <section className="connection-card"><div className="connection-card-top"><div className="provider-mark muted">⌘</div><div><h2>Other model providers</h2><p>Optional API connections</p></div><span className="pill">Separate billing</span></div><p>Your existing providers are still available in API mode. Subscription connections use Codex for ChatGPT and Claude Code for Claude; other providers use their supported APIs.</p><button className="secondary-btn" onClick={onOpenModels}>Manage API models →</button></section>
       <div className="privacy-note">Sign-in and token renewal are handled by Codex. Asrār keeps its own local sign-in, separate from VS Code. Signing out here does not sign you out of VS Code. Subscription tasks never switch to paid API calls automatically.</div>
     </div>
   </div>;

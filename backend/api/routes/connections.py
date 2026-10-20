@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Depends, Header
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from core.codex_bridge import bridge, CodexError
+from core.claude_bridge import bridge as claude_bridge, ClaudeError
 from core.preferences import load_preferences, save_preferences
 
 
@@ -40,11 +41,75 @@ class AnswerRequest(BaseModel):
     answers: dict[str, str]
 
 
+class ClaudeLoginCode(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    code: str
+
+
 async def call(operation):
     try:
         return await operation
-    except (CodexError, OSError) as exc:
-        raise HTTPException(409, str(exc)) from exc
+    except (CodexError, ClaudeError, OSError, TimeoutError) as exc:
+        raise HTTPException(409, str(exc) or "The runtime did not respond. Reconnect and try again.") from exc
+
+
+@router.get("/claude")
+async def claude_status():
+    return await claude_bridge.status()
+
+
+@router.post("/claude/login")
+async def claude_login():
+    return await call(claude_bridge.begin_login())
+
+
+@router.post("/claude/login/code")
+async def claude_login_code(req: ClaudeLoginCode):
+    await call(claude_bridge.submit_code(req.code))
+    return {"success": True}
+
+
+@router.post("/claude/login/cancel")
+async def claude_cancel_login():
+    await call(claude_bridge.cancel_login())
+    return {"success": True}
+
+
+@router.post("/claude/logout")
+async def claude_logout():
+    await call(claude_bridge.logout())
+    return {"success": True}
+
+
+@router.post("/claude/reconnect")
+async def claude_reconnect():
+    if claude_bridge.active:
+        raise HTTPException(409, "Stop running Claude tasks before reconnecting")
+    claude_bridge._catalog = None
+    return await claude_bridge.status()
+
+
+@router.get("/claude/models")
+async def claude_models():
+    return {"models": await call(claude_bridge.models())}
+
+
+@router.post("/claude/approve")
+async def claude_approve(req: DecisionRequest):
+    await call(claude_bridge.decide(req.conversation_id, req.action_id, req.approved))
+    return {"success": True}
+
+
+@router.post("/claude/answer")
+async def claude_answer(req: AnswerRequest):
+    await call(claude_bridge.answer(req.conversation_id, req.action_id, req.answers))
+    return {"success": True}
+
+
+@router.post("/claude/stop")
+async def claude_stop(req: StopRequest):
+    await call(claude_bridge.interrupt(req.conversation_id))
+    return {"success": True}
 
 
 @router.get("/codex")

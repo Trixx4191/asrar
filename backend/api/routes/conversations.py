@@ -51,7 +51,7 @@ async def get_conversation(conversation_id: str):
     conv["plan"] = memory.get_plan(conversation_id)
     from core.codex_chat import session_for
     session = session_for(conversation_id)
-    conv["runtime"] = "codex" if session else "api"
+    conv["runtime"] = session["runtime"] if session else "api"
     return {"conversation": conv}
 
 
