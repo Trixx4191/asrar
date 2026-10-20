@@ -76,7 +76,7 @@ def decide_route(conversation_id: str, user_input: str, force_model: str | None 
 
         if pending_model and pending_model.get("enabled", True):
             try:
-                pending_available = get_provider(pending_model["provider"]).is_available()
+                pending_available = get_provider(pending_model["provider"], model=pending_model).is_available()
             except Exception:
                 pending_available = False
 
@@ -166,7 +166,7 @@ async def decide_route_async(
         pending_model = registry["models"].get(pending_key)
         if pending_model and pending_model.get("enabled", True):
             try:
-                pending_available = get_provider(pending_model["provider"]).is_available()
+                pending_available = get_provider(pending_model["provider"], model=pending_model).is_available()
             except Exception:
                 pending_available = False
             if pending_available:

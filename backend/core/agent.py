@@ -36,6 +36,7 @@ from core.classifier import classify_task
 from core.router import route, route_async, load_registry
 from core import supervisor, memory, hooks, orchestrator, skills as skill_catalog
 from core import context as context_mgr
+from core import registry as model_registry
 from providers import get_provider
 from providers.base import Message
 from tools import web, files, shell, diagnosis, testing, codesearch
@@ -53,6 +54,17 @@ SYSTEM_PROMPT = """You are Asrār (أسرار), a powerful agentic AI assistant 
 You can work with files, create projects, download resources, run commands, and diagnose system issues.
 
 IMPORTANT AGENTIC BEHAVIOR:
+- Manage model connections with list_models, register_model, configure_model,
+  and test_model. When asked to add a model, use these tools instead of editing
+  Python provider code or .env contents with shell/file tools. Supply an exact
+  provider model ID or an OpenRouter model URL. OpenRouter organization/model
+  IDs use the openrouter provider, not the organization as a native provider.
+  Supported connection protocols are openai_compatible, anthropic, and google;
+  a new compatible provider needs its API base URL and an api_key_env variable
+  name. Keys are entered only in the local .env file, never in chat/tool arguments.
+  Registration creates missing credential placeholders and updates task routing.
+  Report the test result: saved/configured is not the same as working. If a model
+  uses a different API protocol, explain the missing adapter rather than guessing.
 - When asked to create, edit, or modify files/projects, use your tools to actually do it — don't just describe what you'd do.
 - Use tools for each step. Verify success. Report exact paths and results.
 - Think step-by-step and chain tool calls when needed.
@@ -625,6 +637,38 @@ TOOL_SCHEMAS: list[dict] = [
 ]
 
 
+TOOL_SCHEMAS.extend([
+    {"type": "function", "function": {
+        "name": "list_models", "description": "List registered models, connection status, and supported provider configurations. Never returns keys.",
+        "parameters": {"type": "object", "properties": {}}
+    }},
+    {"type": "function", "function": {
+        "name": "register_model", "description": "Register a model and its provider connection, add a local credential placeholder, update routing, and test a harmless tool round trip. Use for requests to add models. Only api_key_env names, never secret values.",
+        "parameters": {"type": "object", "properties": {
+            "name_or_url": {"type": "string", "description": "Exact model ID, OpenRouter organization/model, model page URL, or unambiguous catalog name"},
+            "provider": {"type": "string", "description": "Native/gateway provider, e.g. anthropic, google, groq, openrouter, xai, or a custom name"},
+            "key": {"type": "string"}, "api_base": {"type": "string", "description": "API base including version, e.g. https://host/v1; no credentials"},
+            "protocol": {"type": "string", "enum": ["openai_compatible", "anthropic", "google"]},
+            "api_key_env": {"type": "string", "description": "Environment variable NAME, not the secret value"},
+            "strengths": {"type": "array", "items": {"type": "string"}},
+            "priority": {"type": "integer", "description": "Higher priority ranks first within supplied strengths, default 2"}
+        }, "required": ["name_or_url"]}
+    }},
+    {"type": "function", "function": {
+        "name": "configure_model", "description": "Repair an existing model's ID, provider, endpoint, protocol, credential variable, or routing strengths, then retest it. Never provide raw keys.",
+        "parameters": {"type": "object", "properties": {
+            "key": {"type": "string"}, "model_id": {"type": "string"}, "provider": {"type": "string"},
+            "api_base": {"type": "string"}, "protocol": {"type": "string", "enum": ["openai_compatible", "anthropic", "google"]},
+            "api_key_env": {"type": "string"}, "strengths": {"type": "array", "items": {"type": "string"}},
+            "priority": {"type": "integer"}
+        }, "required": ["key"]}
+    }},
+    {"type": "function", "function": {
+        "name": "test_model", "description": "Test a registered model's current local credentials and a harmless native tool-result round trip. Makes up to two small provider calls; never edits project files.",
+        "parameters": {"type": "object", "properties": {"key": {"type": "string"}}, "required": ["key"]}
+    }},
+])
+
 # Permissions are issued by the server after human approval, never by a model.
 for _schema in TOOL_SCHEMAS:
     _schema["function"]["parameters"].get("properties", {}).pop("confirmed", None)
@@ -654,7 +698,21 @@ async def _dispatch_tool(name: str, args: dict, conversation_id: str | None = No
     PreToolUse hooks have approved the call — assume by this point the
     call is allowed to happen."""
     try:
-        if name == "read_file":
+        if name == "list_models":
+            return json.dumps({"models": model_registry.list_models(), "providers": model_registry.PROVIDER_DEFAULTS})
+        elif name == "register_model":
+            return json.dumps(await model_registry.lookup_and_register_model(**args))
+        elif name == "configure_model":
+            changes = dict(args)
+            key = changes.pop("key")
+            model = model_registry.configure_model(key, **changes)
+            model["validation"] = await model_registry.test_model(key)
+            return json.dumps(model)
+        elif name == "test_model":
+            result = await model_registry.test_model(args["key"])
+            return ("" if result["ready"] else "Error: model is not ready. ") + json.dumps(result)
+
+        elif name == "read_file":
             r = files.read_file(args["path"], max_chars=args.get("max_chars", 8000))
             return r.content if r.success else f"Error: {r.error}"
 
@@ -1110,7 +1168,7 @@ async def run_task(
             if not model:
                 continue
             try:
-                prov = get_provider(model["provider"])
+                prov = get_provider(model["provider"], model=model)
             except Exception:
                 continue
             if not prov.is_available() or not orchestrator.is_available(model["provider"]):
@@ -1154,7 +1212,7 @@ async def run_task(
         if not model:
             continue
         try:
-            provider = get_provider(model["provider"])
+            provider = get_provider(model["provider"], model=model)
         except Exception:
             continue
         if not provider.is_available():
@@ -1283,6 +1341,7 @@ async def run_task(
                     attempt_messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
+                        "name": tc["name"],
                         "content": result,
                     })
 
@@ -1423,7 +1482,7 @@ async def run_task_stream(
         if not model:
             continue
         try:
-            candidate_provider = get_provider(model.get("provider", ""))
+            candidate_provider = get_provider(model.get("provider", ""), model=model)
         except Exception:
             continue
         if not candidate_provider.is_available():
@@ -1664,6 +1723,7 @@ async def run_task_stream(
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
+                        "name": tc["name"],
                         "content": result,
                     })
 

@@ -78,21 +78,6 @@ async def openai_complete(
                 tool_calls=tool_calls,
                 finish_reason=choice.get("finish_reason"),
             )
-    except httpx.HTTPStatusError as e:
-        status = getattr(getattr(e, "response", None), "status_code", "?")
-        try:
-            preview = e.response.text[:200]
-        except Exception:
-            preview = "(unable to read error body)"
-        try:
-            hdrs = dict(e.response.headers or {})
-        except Exception:
-            hdrs = {}
-        ra = hdrs.get("retry-after") or hdrs.get("Retry-After")
-        msg = f"Provider HTTP {status}: {preview}" + (f" (retry-after={ra})" if ra else "")
-        return ProviderResponse(
-            content="", model_id=model_id, provider=provider_name, success=False, error=msg
-        )
     except Exception as e:
         return ProviderResponse(
             content="", model_id=model_id, provider=provider_name, success=False, error=provider_error(e)

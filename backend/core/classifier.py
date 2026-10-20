@@ -209,7 +209,7 @@ async def _model_classify(
             return None
 
         model = registry["models"][model_key]
-        provider = get_provider(model["provider"])
+        provider = get_provider(model["provider"], model=model)
         if not provider.is_available():
             return None
 

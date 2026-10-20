@@ -103,7 +103,7 @@ async def _llm_summarize(older: list) -> str | None:
             if key not in available:
                 continue
             model = registry["models"][key]
-            provider = get_provider(model["provider"])
+            provider = get_provider(model["provider"], model=model)
             if not provider.is_available():
                 continue
             transcript = []

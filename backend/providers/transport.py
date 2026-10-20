@@ -3,6 +3,7 @@
 import httpx
 import os
 import re
+from .configuration import redact_secrets
 
 
 def request_timeout(read: float = 45) -> httpx.Timeout:
@@ -18,9 +19,7 @@ def provider_error(exc: Exception) -> str:
             error = exc.response.json().get("error", {})
             detail = error.get("message", "") if isinstance(error, dict) else ""
             detail = str(detail)
-            for key, value in os.environ.items():
-                if key.endswith("_API_KEY") and value:
-                    detail = detail.replace(value, "[redacted]")
+            detail = redact_secrets(detail)
             detail = re.sub(r"(?i)(key|token|authorization)=\S+", r"\1=[redacted]", detail)[:400]
         except Exception:
             pass
