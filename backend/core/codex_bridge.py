@@ -55,6 +55,7 @@ class CodexBridge:
         self.login_error = None
         self.active = {}  # conversation id -> thread/turn, owned by one stream
         self.last_error = None
+        self._cleanup_tasks = set()
 
     async def start(self):
         async with self._start_lock:
@@ -198,6 +199,15 @@ class CodexBridge:
         # Explicit allowlist: never expose token material from protocol additions.
         return {"type": "chatgpt", "email": raw.get("email"), "plan": raw.get("planType")}
 
+    async def require_account(self):
+        async with self._auth_lock:
+            if self.login:
+                raise CodexError("Finish or cancel the pending sign-in before starting a task")
+            account = await self.account()
+            if not account:
+                raise CodexError("Connect your ChatGPT account in Accounts before sending a task")
+            return account
+
     async def status(self):
         if not executable():
             return {"installed": False, "connected": False, "account": None, "message": "Install the Codex runtime with npm install in frontend."}
@@ -225,16 +235,21 @@ class CodexBridge:
         return self.login
 
     async def cancel_login(self):
+        async with self._auth_lock:
+            await self._cancel_login()
+
+    async def _cancel_login(self):
         if self.login:
             await self.request("account/login/cancel", {"loginId": self.login["loginId"]})
             self.login = None
 
     async def logout(self):
-        if self.active:
-            raise CodexError("Stop running tasks before signing out")
-        await self.cancel_login()
-        await self.request("account/logout")
-        self.login_error = None
+        async with self._auth_lock:
+            if self.active:
+                raise CodexError("Stop running tasks before signing out")
+            await self._cancel_login()
+            await self.request("account/logout")
+            self.login_error = None
 
     async def models(self):
         models, cursor = [], None
@@ -276,7 +291,27 @@ class CodexBridge:
         if active and active.get("turn_id"):
             await self.request("turn/interrupt", {"threadId": active["thread_id"], "turnId": active["turn_id"]})
 
+    def schedule_interrupt(self, conversation_id):
+        """Capture IDs before stream cleanup, even when its HTTP task is cancelled."""
+        active = self.active.get(conversation_id)
+        if not active or not active.get("turn_id"):
+            return None
+        task = asyncio.create_task(self.request("turn/interrupt", {
+            "threadId": active["thread_id"], "turnId": active["turn_id"],
+        }, timeout=5))
+        self._cleanup_tasks.add(task)
+        def completed(future):
+            self._cleanup_tasks.discard(future)
+            if not future.cancelled():
+                future.exception()  # Retrieve errors after a disconnected HTTP client.
+        task.add_done_callback(completed)
+        return task
+
     async def close(self):
+        for task in list(self._cleanup_tasks):
+            task.cancel()
+        if self._cleanup_tasks:
+            await asyncio.gather(*self._cleanup_tasks, return_exceptions=True)
         process, self.process = self.process, None
         if process and process.returncode is None:
             process.terminate()

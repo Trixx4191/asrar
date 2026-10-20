@@ -88,11 +88,34 @@ class SubscriptionTest(unittest.IsolatedAsyncioTestCase):
         stream = codex_chat.stream_chat("wait", self.conv)
         await anext(stream)
         self.assertEqual(self.bridge.active[self.conv]["turn_id"], "turn-test")
-        with patch.object(self.bridge, "interrupt", wraps=self.bridge.interrupt) as stop:
+        with patch.object(self.bridge, "schedule_interrupt", wraps=self.bridge.schedule_interrupt) as stop:
             await stream.aclose()
-            stop.assert_awaited_once_with(self.conv)
+            stop.assert_called_once_with(self.conv)
         self.assertFalse(self.bridge.active)
         self.assertFalse(self.bridge.listeners)
+
+    async def test_task_cancellation_still_sends_runtime_interrupt(self):
+        stream = codex_chat.stream_chat("wait", self.conv)
+        await anext(stream)
+        with patch.object(self.bridge, "_send", wraps=self.bridge._send) as send:
+            pending = asyncio.create_task(anext(stream))
+            await asyncio.sleep(0)
+            pending.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await pending
+            await asyncio.sleep(.03)
+            self.assertTrue(any(call.args[0].get("method") == "turn/interrupt" for call in send.call_args_list))
+        self.assertFalse(self.bridge.active)
+
+    async def test_context_files_are_scoped_to_workspace(self):
+        file = self.root / "example.py"
+        file.write_text("print('hello')")
+        events = await self.collect(context_files=["example.py"])
+        self.assertTrue(events[-1]["done"])
+        self.assertIn("example.py", memory.get_messages_full(self.conv)[0]["content"])
+        new = memory.create_conversation("outside context")
+        events = [event async for event in codex_chat.stream_chat("hello", new, context_files=[str(ROOT / "README.md")])]
+        self.assertIn("inside the selected workspace", events[0]["error"])
 
     async def test_questions_require_complete_scoped_answers(self):
         stream = codex_chat.stream_chat("ask a question", self.conv)
