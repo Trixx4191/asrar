@@ -222,3 +222,7 @@ tests/            pytest suite covering the agent loop, tools, and orchestrator
 
 See [`LAYOUT.md`](./LAYOUT.md) for the annotated file-by-file breakdown, and
 [`ASRAR.md`](./ASRAR.md) for the full behavior spec and version changelog.
+
+### Kimi and Qwen account connections
+
+Kimi Code browser sign-in is available in **Accounts & connections**, alongside Codex and Claude Code. Install the Python `kimi-cli` runtime first; see [Kimi connection setup](KIMI_CONNECTIONS.md). Existing Kimi and Qwen API options remain available in API mode. Qwen account OAuth is unavailable according to its current official documentation; the Accounts page includes the notice.

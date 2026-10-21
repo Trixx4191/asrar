@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from core.codex_bridge import bridge, CodexError
 from core.claude_bridge import bridge as claude_bridge, ClaudeError
+from core.kimi_bridge import bridge as kimi_bridge, KimiError
 from core.preferences import load_preferences, save_preferences
 
 
@@ -49,7 +50,7 @@ class ClaudeLoginCode(BaseModel):
 async def call(operation):
     try:
         return await operation
-    except (CodexError, ClaudeError, OSError, TimeoutError) as exc:
+    except (CodexError, ClaudeError, KimiError, OSError, TimeoutError) as exc:
         raise HTTPException(409, str(exc) or "The runtime did not respond. Reconnect and try again.") from exc
 
 
@@ -188,3 +189,49 @@ async def update_preferences(changes: dict):
         return save_preferences(changes).model_dump()
     except (ValidationError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/kimi")
+async def kimi_status():
+    return await kimi_bridge.status()
+
+
+@router.post("/kimi/login")
+async def kimi_login():
+    return await call(kimi_bridge.begin_login())
+
+
+@router.post("/kimi/login/cancel")
+async def kimi_cancel():
+    await call(kimi_bridge.cancel_login())
+    return {"success": True}
+
+
+@router.post("/kimi/logout")
+async def kimi_logout():
+    await call(kimi_bridge.logout())
+    return {"success": True}
+
+
+@router.post("/kimi/reconnect")
+async def kimi_reconnect():
+    if kimi_bridge.active:
+        raise HTTPException(409, "Stop running Kimi tasks before reconnecting")
+    return await kimi_bridge.status()
+
+
+@router.get("/kimi/models")
+async def kimi_models():
+    return {"models": kimi_bridge._catalog if kimi_bridge.account() else []}
+
+
+@router.post("/kimi/approve")
+async def kimi_approve(req: DecisionRequest):
+    await call(kimi_bridge.decide(req.conversation_id, req.action_id, req.approved))
+    return {"success": True}
+
+
+@router.post("/kimi/stop")
+async def kimi_stop(req: StopRequest):
+    await call(kimi_bridge.interrupt(req.conversation_id))
+    return {"success": True}
