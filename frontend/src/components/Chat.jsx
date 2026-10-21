@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import nalaynSymbol from "../assets/nalayn.png";
 import ModelBadge from "./ModelBadge";
 import Markdown from "./Markdown";
 import { apiFetch as fetch, api, API } from "../api";
@@ -696,9 +697,12 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
         }}>
           {messages.length === 0 ? (
             <div className="chat-empty">
-              <div className="chat-empty-glyph">◈</div>
-              <div className="eyebrow">A SPACE FOR YOUR NEXT IDEA</div>
-              <div className="chat-empty-title">What shall we work on?</div>
+              <div className="chat-empty-symbol"><img src={nalaynSymbol} alt="Nalayn symbol" /></div>
+              <div className="welcome-invocation">
+                <div className="welcome-bismillah" lang="ar" dir="rtl">بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ</div>
+                <div className="eyebrow">In the name of Allah, the Most Gracious, the Most Merciful</div>
+              </div>
+              <div className="chat-empty-title">Where shall we begin?</div>
               <div className="chat-empty-hint">
                 {runtime !== "api" ? "Explore your project, understand a problem, or build something together." : "Work with your configured API providers."}
               </div>

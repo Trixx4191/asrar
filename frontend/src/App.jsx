@@ -6,6 +6,22 @@ import Settings from "./components/Settings";
 import Skills from "./components/Skills";
 import Connections from "./components/Connections";
 import { api } from "./api";
+import { readWallpapers, importWallpaper, deleteWallpaper } from "./wallpaperStore";
+import { DEFAULT_APPEARANCE, normalizeAppearance, themeStyle } from "./appearance";
+import lilyWallpaper from "./assets/wallpapers/4tyfpm.jpeg";
+import floralWallpaper from "./assets/wallpapers/4bfb4.jpeg";
+import portraitWallpaper from "./assets/wallpapers/424.jpeg";
+
+const WALLPAPERS = [
+  { id: "lilies", name: "Midnight lilies", image: lilyWallpaper },
+  { id: "floral", name: "Ivory bloom", image: floralWallpaper },
+  { id: "portrait", name: "Lace portrait", image: portraitWallpaper },
+];
+
+function loadAppearance() {
+  try { return normalizeAppearance(JSON.parse(localStorage.getItem("asrar_appearance") || "{}")); }
+  catch { return { ...DEFAULT_APPEARANCE }; }
+}
 
 const NAV = [
   { id: "chat", icon: "◈", label: "Workspace" },
@@ -38,7 +54,31 @@ function SubscriptionControls({ runtime, models, preferences, connected, busy, o
 }
 
 export default function App() {
+  const [resolvedTheme, setResolvedTheme] = useState("dark");
   const [view, setView] = useState("chat");
+  const [appearance, setAppearance] = useState(loadAppearance);
+  useEffect(() => { localStorage.setItem("asrar_appearance", JSON.stringify(appearance)); }, [appearance]);
+  const [wallpaper, setWallpaper] = useState(() => localStorage.getItem("asrar_wallpaper") || "lilies");
+  useEffect(() => { localStorage.setItem("asrar_wallpaper", wallpaper); }, [wallpaper]);
+  const [uploadedWallpapers, setUploadedWallpapers] = useState([]);
+  const [wallpaperStorageError, setWallpaperStorageError] = useState("");
+  const wallpapers = [...WALLPAPERS, ...uploadedWallpapers];
+  useEffect(() => {
+    let active = true;
+    readWallpapers().then(images => { if (active) setUploadedWallpapers(images); })
+      .catch(e => { if (active) setWallpaperStorageError(e.message); });
+    return () => { active = false; };
+  }, []);
+  async function uploadWallpaper(file) {
+    const record = await importWallpaper(file);
+    setUploadedWallpapers(old => [...old, record]); setWallpaper(record.id);
+    setWallpaperStorageError("");
+  }
+  async function removeWallpaper(id) {
+    await deleteWallpaper(id);
+    setUploadedWallpapers(old => old.filter(image => image.id !== id));
+    setWallpaper(old => old === id ? "lilies" : old);
+  }
   const [backendOk, setBackendOk] = useState(null);
   const [models, setModels] = useState([]);
   const [codexModels, setCodexModels] = useState([]);
@@ -100,10 +140,14 @@ export default function App() {
   useEffect(() => { localStorage.setItem("asrar_force_model", forceModel || ""); }, [forceModel]);
   useEffect(() => {
     const media = matchMedia("(prefers-color-scheme: light)");
-    const apply = () => { document.documentElement.dataset.theme = preferences?.theme === "system" ? (media.matches ? "light" : "dark") : preferences?.theme || "dark"; };
+    const apply = () => {
+      const choice = appearance.mode || preferences?.theme || "dark";
+      const resolved = choice === "system" ? (media.matches ? "light" : "dark") : choice;
+      document.documentElement.dataset.theme = resolved; setResolvedTheme(resolved);
+    };
     apply(); media.addEventListener("change", apply);
     return () => media.removeEventListener("change", apply);
-  }, [preferences?.theme]);
+  }, [preferences?.theme, appearance.mode]);
 
   async function saveSettings(changes) {
     const result = await api("/connections/preferences", { method: "PATCH", body: changes });
@@ -121,7 +165,12 @@ export default function App() {
   const agentName = preferences?.agent_name || "Asrār";
   const isElectron = !!window.asrar;
 
-  return <div className="app-shell">
+  return <div className="app-shell" data-wallpaper={wallpaper} style={{ ...themeStyle(appearance, resolvedTheme), "--wallpaper": `url("${(wallpapers.find(item => item.id === wallpaper) || WALLPAPERS[0]).image}")`,
+    "--glass-alpha": 1 - appearance.transparency / 100,
+    "--surface-alpha": Math.min(1, 1 - appearance.transparency / 100 + .10),
+    "--strong-alpha": Math.min(1, 1 - appearance.transparency / 100 + .24),
+    "--glass-blur": `${appearance.blur}px`, "--wallpaper-dim": appearance.dim / 100 }}>
+    <div className="workspace-wallpaper" aria-hidden="true" />
     <div className="titlebar">
       <span className="titlebar-wordmark">أسرار</span><span>{agentName}</span><span className="titlebar-caption">Your local AI workspace</span>
       {isElectron && <div className="titlebar-controls">
@@ -134,9 +183,13 @@ export default function App() {
       <aside className="sidebar">
         <div className="sidebar-logo"><div className="logo-name">{agentName}<span className="version-tag">WORKSPACE</span></div><div className="logo-arabic">A little clarity. A lot of possibility.</div></div>
         <nav className="sidebar-nav" aria-label="Main navigation">
-          {NAV.map(n => <button key={n.id} className={`nav-item ${view === n.id ? "active" : ""}`} onClick={() => setView(n.id)}><span className="nav-icon">{n.icon}</span><span>{n.label}</span></button>)}
+          {NAV.map(n => <button key={n.id} title={n.label} aria-current={view === n.id ? "page" : undefined} className={`nav-item ${view === n.id ? "active" : ""}`} onClick={() => setView(n.id)}><span className="nav-icon">{n.icon}</span><span>{n.label}</span></button>)}
         </nav>
         <div className="sidebar-footer">
+          <div className="wallpaper-picker" role="group" aria-label="Workspace wallpaper">
+            <span className="eyebrow">YOUR ATMOSPHERE</span>
+            <div>{wallpapers.map(item => <button key={item.id} className={`wallpaper-swatch ${wallpaper === item.id ? "selected" : ""}`} style={{ backgroundImage: `url("${item.image}")` }} title={item.name} aria-label={item.name} aria-pressed={wallpaper === item.id} onClick={() => setWallpaper(item.id)}>{wallpaper === item.id && <span>✓</span>}</button>)}</div>
+          </div>
           <button className="sidebar-account" onClick={() => setView("connections")}>
             <span className={`status-dot ${selectedConnection?.connected ? "online" : ""}`} />
             <span>{selectedConnection?.connected ? selectedConnection.account?.email || `${subscriptionName} connected` : runtime === "api" ? "Accounts & providers" : `Connect your ${subscriptionName} account`}
@@ -169,7 +222,7 @@ export default function App() {
         {view === "models" && <ModelRegistry />}
         {view === "skills" && <Skills />}
         {view === "history" && <TaskHistory />}
-        {view === "settings" && <Settings preferences={preferences} onSave={saveSettings} models={codexModels} claudeModels={claudeModels} />}
+        {view === "settings" && <Settings resolvedTheme={resolvedTheme} appearance={appearance} onAppearanceChange={changes => setAppearance(old => ({ ...old, ...changes }))} onAppearanceReset={() => { setAppearance(DEFAULT_APPEARANCE); setWallpaper("lilies"); }} wallpaperStorageError={wallpaperStorageError} onWallpaperUpload={uploadWallpaper} onWallpaperRemove={removeWallpaper} wallpapers={wallpapers} wallpaper={wallpaper} onWallpaperChange={setWallpaper} preferences={preferences} onSave={saveSettings} models={codexModels} claudeModels={claudeModels} />}
       </main>
     </div>
     <div className="status-bar"><span className="status-dot" style={{ background: backendOk === false ? "var(--red)" : backendOk ? "var(--green)" : "var(--yellow)" }} /><span>{backendOk === false ? "Backend offline" : backendOk ? "Connected locally" : "Connecting…"}</span><span className="status-runtime">{runtime !== "api" ? `${subscriptionName} subscription · no API fallback` : "API mode · provider billing applies"}</span></div>
