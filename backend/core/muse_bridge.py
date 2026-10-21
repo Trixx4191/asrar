@@ -93,7 +93,8 @@ class MuseBridge:
             AUTH_HOME.mkdir(parents=True, exist_ok=True, mode=0o700)
             AUTH_HOME.chmod(0o700)
             self.process = await asyncio.create_subprocess_exec(
-                binary, "--approval-judge", "off", "--sandbox-network", "proxy-only" if self.network else "restricted", "serve",
+                binary, "serve", "--provider", "meta", "--contributor-mode", "off",
+                "--sandbox-network", "proxy-only" if self.network else "restricted",
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
                 env=cli_environment(), cwd=str(AUTH_HOME), limit=8 * 1024 * 1024, start_new_session=os.name != "nt")
             self._reader = asyncio.create_task(self._read(self.process))
@@ -102,6 +103,10 @@ class MuseBridge:
                     "capabilities": {"experimentalApi": True, "userInputDialogs": True}})
                 if self.handshake.get("schema", {}).get("version") != 1:
                     raise MuseError("This Muse protocol version is unsupported. Update the integration before continuing.")
+                home = self.handshake.get("museHome")
+                if not home or not Path(home).resolve().is_relative_to(AUTH_HOME.resolve()):
+                    raise MuseError("Muse did not use Asrar's private profile. Reconnect with a runtime that supports XDG directories.")
+                await self.send({"method": "initialized"})
             except BaseException:
                 await self.close()
                 raise
@@ -118,7 +123,7 @@ class MuseBridge:
         future = asyncio.get_running_loop().create_future()
         self.pending[key] = future
         try:
-            await self.send({"id": key, "method": method, "params": params or {}})
+            await self.send({"id": key, "method": method, **({"params": params} if params is not None else {})})
             return await asyncio.wait_for(future, timeout)
         except TimeoutError as exc:
             raise MuseError(f"Muse did not answer {method}. Reconnect and try again.") from exc

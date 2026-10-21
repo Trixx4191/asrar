@@ -32,7 +32,7 @@ export default function MuseConnection({ connection, refresh, onUse }) {
     {connection && !connection.installed && <div className="notice">Install the official Muse Code CLI, or set ASRAR_MUSE_BIN to its executable path, then refresh.</div>}
     {login && <div className="login-panel" role="status"><strong>Finish signing in with Meta</strong><p>Open the official verification page and enter this code if asked:</p><div className="device-code">{login.userCode}</div><div className="button-row"><button className="secondary-btn" disabled={!login.authUrl} onClick={() => openExternal(login.authUrl).catch(e => setError(e.message))}>Open Meta sign-in ↗</button><button className="secondary-btn" disabled={busy} onClick={() => action("login/cancel")}>Cancel sign-in</button></div></div>}
     {(error || connection?.message) && <div className="error-banner" role="alert">{error || connection.message}</div>}
-    <p className="field-help">Wonder Full requires Power Usage or Maximum Usage. The max reasoning setting is separate from Full. Only models returned for your account appear in chat. Manage Standard / Contributor mode in Muse; Contributor mode may let Meta train on submitted content.</p>
+    <p className="field-help">Wonder Full requires Power Usage or Maximum Usage. The max reasoning setting is separate from Full. Only models returned for your account appear in chat. Asrār starts Muse in Standard mode with Contributor mode off. Your plan’s Standard-mode limits apply.</p>
     <p className="field-help">Muse handles sign-in and token renewal in Asrār’s private profile. This connection never falls back to API billing. A Meta API key can be configured separately in API models.</p>
   </section>;
 }

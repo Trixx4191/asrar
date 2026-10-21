@@ -11,6 +11,7 @@ account = home / 'fake-account'
 session = None
 turn = None
 permission = None
+ready = False
 
 
 def send(data):
@@ -37,7 +38,14 @@ for line in sys.stdin:
     req = json.loads(line)
     method = req.get('method')
     p = req.get('params') or {}
+    if method in {'account/read', 'account/logout', 'account/loginCancel'}:
+        assert 'params' not in req
     if not method: continue  # presentation receipt
+    if method == 'initialized':
+        assert 'params' not in req
+        ready = True
+        continue
+    if method != 'initialize': assert ready
     assert req.get('jsonrpc') == '2.0'
     if method == 'initialize':
         assert not any(k.endswith('_API_KEY') for k in os.environ)
@@ -62,7 +70,7 @@ for line in sys.stdin:
             {'modelId': 'muse-wonder-full', 'displayLabel': 'Muse Wonder Full', 'providerId': 'meta', 'isDefault': False, 'variants': ['high', 'max']},
             {'modelId': 'other-provider', 'providerId': 'other', 'variants': []}]})
     elif method == 'permissionProfile/list':
-        reply(req, {'profiles': [{'profileId': 'read-only', 'label': 'Read-only', 'available': True}, {'profileId': 'ask-me', 'label': 'Ask me', 'available': True}]})
+        reply(req, {'profiles': [{'profileId': 'read-only', 'label': 'Read-only', 'available': True, 'reviewerAuthority': 'human'}, {'profileId': 'ask-me', 'label': 'Ask me', 'available': True, 'reviewerAuthority': 'human'}]})
     elif method.startswith(('session/', 'turn/', 'approval/', 'userInput/')):
         assert uuid.UUID(p['commandId']).version == 7
         if method == 'session/start':

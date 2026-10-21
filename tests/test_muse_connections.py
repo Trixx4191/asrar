@@ -148,6 +148,14 @@ class MuseConnectionsTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(MuseError): muse_chat.profile_for([], 'read-only')
         self.assertFalse(memory.get_messages_full(self.conv))
 
+    async def test_host_must_use_private_profile(self):
+        await self.bridge.close()
+        with patch.object(self.bridge, '_request', new_callable=AsyncMock, return_value={
+                'schema': {'version': 1}, 'museHome': str(ROOT)}):
+            with self.assertRaisesRegex(MuseError, 'private profile'):
+                await self.bridge.start()
+        self.assertIsNone(self.bridge.process)
+
     async def test_api_credentials_not_inherited(self):
         await self.bridge.close()
         with patch.dict(os.environ, {'META_API_KEY': 'secret', 'MODEL_API_KEY': 'secret', 'OPENAI_API_KEY': 'secret'}):
