@@ -81,11 +81,14 @@ async def stream_chat(message, conversation_id, model=None, effort=None, context
             raise CodexError("This chat uses an API connection. Start a new chat to use your ChatGPT subscription.")
         sandbox = "read-only" if settings.access_mode == "read-only" else "workspace-write"
         thread_params = {"cwd": settings.workspace, "model": chosen_model,
-                         "approvalPolicy": "untrusted", "sandbox": sandbox,
+                         "approvalPolicy": "on-request", "sandbox": sandbox,
                          "modelProvider": "openai", "approvalsReviewer": "user",
                          "config": {"web_search": settings.web_search},
                          "developerInstructions": "You are Asrār, a local coding assistant powered by Codex. "
-                         "Explain your work clearly, respect the selected workspace, and verify edits when appropriate.\n" + settings.instructions}
+                         "Explain your work clearly, respect the selected workspace, and verify edits when appropriate. "
+                         "Run harmless directory navigation (cd, pwd) automatically inside the sandbox. "
+                         "Do not request confirmation merely to change directories. "
+                         "Treat writes and permission changes with caution; obtain approval for actions beyond the sandbox.\n" + settings.instructions}
         if existing:
             await bridge.request("thread/resume", {**thread_params, "threadId": existing["thread_id"], "excludeTurns": True})
             thread_id = existing["thread_id"]
@@ -101,7 +104,7 @@ async def stream_chat(message, conversation_id, model=None, effort=None, context
         # A read-only thread always has restricted network access.
         params = {"threadId": thread_id, "input": [{"type": "text", "text": message}],
                   "model": chosen_model, "cwd": settings.workspace,
-                  "approvalPolicy": "untrusted", "sandboxPolicy": policy}
+                  "approvalPolicy": "on-request", "sandboxPolicy": policy}
         if chosen_effort:
             params["effort"] = chosen_effort
         memory.add_message(conversation_id, "user", message)

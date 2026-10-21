@@ -10,6 +10,7 @@ from pathlib import Path
 
 import anyio
 
+from tools.shell import is_navigation_only
 from core import memory
 from core.claude_bridge import bridge, sdk_types, executable, sdk_environment, AUTH_HOME, ClaudeError
 from core.codex_chat import session_for, save_session
@@ -81,6 +82,8 @@ async def _run_turn(message, conversation_id, session_id, resume, settings, mode
                 before[identifier] = (path, path.read_text() if path.is_file() and path.stat().st_size <= 1024 * 1024 else "")
             except (OSError, UnicodeError):
                 pass
+        if name == "Bash" and is_navigation_only(values.get("command", "")):
+            return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}
         if name in WRITE_TOOLS | {"WebSearch", "WebFetch", "AskUserQuestion"}:
             return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask", "permissionDecisionReason": "Review this action in Asrār"}}
         return {}

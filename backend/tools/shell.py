@@ -44,6 +44,44 @@ CONFIRM_PATTERNS = [
 ]
 
 
+def is_navigation_only(command: str) -> bool:
+    """Recognize literal cd/pwd commands without executing shell expansions.
+
+    Chained navigation is safe; substitutions, redirects, and other commands
+    must still go through the normal permission checks.
+    """
+    if not isinstance(command, str) or any(char in command for char in "$`\n\r"):
+        return False
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>()")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return False
+    groups = [[]]
+    for token in tokens:
+        if token == "&&":
+            groups.append([])
+        else:
+            groups[-1].append(token)
+    for group in groups:
+        if not group:
+            return False
+        if group == ["pwd"]:
+            continue
+        if group[0] != "cd":
+            return False
+        args = group[1:]
+        if args and args[0] in {"-L", "-P"}:
+            args = args[1:]
+        if args and args[0] == "--":
+            args = args[1:]
+        if len(args) > 1 or any(arg in {";", "&", "|", "||", "<", ">", ">>", "(", ")"} for arg in args):
+            return False
+    return True
+
+
 def _is_blocked(command: str) -> bool:
     cmd_lower = command.lower()
     return any(p in cmd_lower for p in BLOCKED_PATTERNS)
