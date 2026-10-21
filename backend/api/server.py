@@ -21,6 +21,7 @@ load_dotenv(ROOT / ".env")
 
 from api.routes import chat, models, tasks, debug, conversations, skills, connections
 from core import memory
+from core.muse_bridge import bridge as muse_bridge
 from core.kimi_bridge import bridge as kimi_bridge
 from core.codex_bridge import bridge
 from core.claude_bridge import bridge as claude_bridge
@@ -33,6 +34,7 @@ async def lifespan(app):
     await bridge.close()
     await claude_bridge.close()
     await kimi_bridge.close()
+    await muse_bridge.close()
 
 
 app = FastAPI(title="Asrār Agent API", version="0.14.0", lifespan=lifespan)

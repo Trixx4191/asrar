@@ -28,12 +28,14 @@ class ChatRequest(BaseModel):
     conversation_id: str | None = None
     history: list[dict] = []
     force_model: str | None = None
-    runtime: Literal["api", "codex", "claude", "kimi"] = "api"
+    runtime: Literal["api", "codex", "claude", "kimi", "muse"] = "api"
     codex_model: str | None = None
     reasoning_effort: str | None = None
     claude_model: str | None = None
     claude_effort: str | None = None
     kimi_model: str | None = None
+    muse_model: str | None = None
+    muse_effort: str | None = None
     context_files: list[str] = Field(default_factory=list, max_length=8)
 
 
@@ -153,6 +155,12 @@ async def chat_stream(req: ChatRequest, x_asrar_client: str | None = Header(defa
             title=memory.auto_title(req.message)
         )
         yield f"data: {json.dumps({'conversation_id': conversation_id})}\n\n"
+
+        if req.runtime == "muse":
+            from core.muse_chat import stream_chat as muse_stream
+            async for event in muse_stream(req.message, conversation_id, req.muse_model, req.muse_effort, req.context_files):
+                yield f"data: {json.dumps(event)}\n\n"
+            return
 
         if req.runtime == "kimi":
             from core.kimi_chat import stream_chat as kimi_stream

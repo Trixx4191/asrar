@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import { api, openExternal } from "../api";
 import ClaudeConnection from "./ClaudeConnection";
 import KimiConnection from "./KimiConnection";
+import MuseConnection from "./MuseConnection";
 
-export default function Connections({ connection, refresh, onUseCodex, onOpenModels, claudeConnection, refreshClaude, onUseClaude, kimiConnection, refreshKimi, onUseKimi }) {
+export default function Connections({ connection, refresh, onUseCodex, onOpenModels, claudeConnection, refreshClaude, onUseClaude, kimiConnection, refreshKimi, onUseKimi, museConnection, refreshMuse, onUseMuse }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [login, setLogin] = useState(null);
@@ -40,7 +41,7 @@ export default function Connections({ connection, refresh, onUseCodex, onOpenMod
   }
   const buckets = usage?.rateLimitsByLimitId || (usage?.rateLimits ? { codex: usage.rateLimits } : {});
   return <div className="panel connections-page">
-    <div className="panel-header"><div className="eyebrow">YOUR AI, CONNECTED</div><h1>Accounts & connections</h1><p>Connect your ChatGPT, Claude, or Kimi account. Keep your work in Asrār.</p></div>
+    <div className="panel-header"><div className="eyebrow">YOUR AI, CONNECTED</div><h1>Accounts & connections</h1><p>Connect your ChatGPT, Claude, Kimi, or Meta account. Keep your work in Asrār.</p></div>
     <div className="panel-body">
       <section className="connection-card featured">
         <div className="connection-card-top"><div className="provider-mark">◎</div><div><h2>ChatGPT</h2><p>Powered by the official Codex runtime</p></div><span className={`connection-status ${signedIn ? "connected" : ""}`}>{signedIn ? "Connected" : "Not connected"}</span></div>
@@ -68,9 +69,10 @@ export default function Connections({ connection, refresh, onUseCodex, onOpenMod
         {usageError && Object.keys(buckets).length > 0 && <div className="notice">{usageError}</div>}
       </section>}
       <ClaudeConnection connection={claudeConnection} refresh={refreshClaude} onUse={onUseClaude} />
+      <MuseConnection connection={museConnection} refresh={refreshMuse} onUse={onUseMuse} />
       <KimiConnection connection={kimiConnection} refresh={refreshKimi} onUse={onUseKimi} />
       <section className="connection-card"><div className="connection-card-top"><div className="provider-mark">Q</div><div><h2>Qwen Code</h2><p>Account sign-in unavailable</p></div></div><p>Qwen’s official documentation says account OAuth sign-in was discontinued on April 15, 2026. Your Qwen API connection is still available in API mode.</p><div className="button-row"><button className="secondary-btn" onClick={onOpenModels}>Manage Qwen API connection →</button><button className="secondary-btn" onClick={() => openExternal("https://qwenlm.github.io/qwen-code-docs/en/users/support/troubleshooting/").catch(e => setError(e.message))}>Official sign-in notice ↗</button></div></section>
-      <section className="connection-card"><div className="connection-card-top"><div className="provider-mark muted">⌘</div><div><h2>Other model providers</h2><p>Optional API connections</p></div><span className="pill">Separate billing</span></div><p>Your existing providers are still available in API mode. Account connections use Codex, Claude Code, or Kimi Code. API mode uses your configured provider keys.</p><button className="secondary-btn" onClick={onOpenModels}>Manage API models →</button></section>
+      <section className="connection-card"><div className="connection-card-top"><div className="provider-mark muted">⌘</div><div><h2>Other model providers</h2><p>Optional API connections</p></div><span className="pill">Separate billing</span></div><p>Your existing providers are still available in API mode. Account connections use Codex, Claude Code, Kimi Code, or Muse Code. API mode uses your configured provider keys.</p><button className="secondary-btn" onClick={onOpenModels}>Manage API models →</button></section>
       <div className="privacy-note">Sign-in and token renewal are handled by each official runtime. Asrār keeps its own local sign-in, separate from VS Code. Signing out here does not sign you out of VS Code. Subscription tasks never switch to paid API calls automatically.</div>
     </div>
   </div>;

@@ -226,3 +226,7 @@ See [`LAYOUT.md`](./LAYOUT.md) for the annotated file-by-file breakdown, and
 ### Kimi and Qwen account connections
 
 Kimi Code browser sign-in is available in **Accounts & connections**, alongside Codex and Claude Code. Install the Python `kimi-cli` runtime first; see [Kimi connection setup](KIMI_CONNECTIONS.md). Existing Kimi and Qwen API options remain available in API mode. Qwen account OAuth is unavailable according to its current official documentation; the Accounts page includes the notice.
+
+### Meta Muse Code
+
+**Accounts & connections → Meta · Muse Code** supports Meta account sign-in and coding tasks through the official Muse runtime. The chat model selector shows account-available Muse models and reasoning efforts, including `max`. Wonder Full requires an eligible subscription. A separate Meta API provider is also available. See [Muse connection setup](MUSE_CONNECTIONS.md).
