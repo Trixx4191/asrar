@@ -12,6 +12,7 @@ ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 _file_owned_names: dict[str, set[str]] = {}
 
 PROVIDER_DEFAULTS = {
+    "meta": {"api_base": "https://api.meta.ai/v1", "env_key": "MODEL_API_KEY", "protocol": "openai_compatible"},
     "anthropic": {"api_base": "https://api.anthropic.com/v1", "env_key": "ANTHROPIC_API_KEY", "protocol": "anthropic"},
     "google": {"api_base": "https://generativelanguage.googleapis.com/v1beta", "env_key": "GOOGLE_API_KEY", "protocol": "google"},
     "groq": {"api_base": "https://api.groq.com/openai/v1", "env_key": "GROQ_API_KEY", "protocol": "openai_compatible"},

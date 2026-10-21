@@ -424,6 +424,8 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
           codex_model: preferences?.codex_model || null,
           reasoning_effort: preferences?.reasoning_effort || null,
           context_files: attached,
+          muse_model: preferences?.muse_model || null,
+          muse_effort: preferences?.muse_effort || null,
           kimi_model: preferences?.kimi_model || null,
           claude_model: preferences?.claude_model || null,
           claude_effort: preferences?.claude_effort || null,
@@ -621,7 +623,7 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
     setDecisionBusy(true);
 
     try {
-      if (["codex", "claude", "kimi"].includes(action.runtime)) {
+      if (["codex", "claude", "kimi", "muse"].includes(action.runtime)) {
         await api(`/connections/${action.runtime}/approve`, { method: "POST", body: {
           conversation_id: conversationIdRef.current, action_id: action.action_id, approved,
         } });
@@ -729,7 +731,7 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
           {messages.length > 0 && <button className="chat-export-button" disabled={loading} onClick={exportConversation}>Export ↓</button>}
         </div>
         <PlanPanel items={plan} />
-        {runtimeMismatch && <div className="notice">This chat uses {chatRuntime === "codex" ? "your ChatGPT subscription" : chatRuntime === "kimi" ? "your Kimi account" : chatRuntime === "claude" ? "your Claude subscription" : "an API provider"}. Switch back to that connection or start a new chat.</div>}
+        {runtimeMismatch && <div className="notice">This chat uses {chatRuntime === "codex" ? "your ChatGPT subscription" : chatRuntime === "muse" ? "your Meta account" : chatRuntime === "kimi" ? "your Kimi account" : chatRuntime === "claude" ? "your Claude subscription" : "an API provider"}. Switch back to that connection or start a new chat.</div>}
         <div className="chat-messages" onScroll={event => {
           const element = event.currentTarget;
           const near = element.scrollHeight - element.scrollTop - element.clientHeight < 100;
@@ -784,7 +786,7 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
           <div className="input-hint">
             {runtime !== "api" && <button className="attach-button" disabled={loading || contextFiles.length >= 8 || runtimeMismatch} onClick={addContext}>+ Add workspace file</button>}
             {preferences?.enter_to_send ? "Enter to send · Shift+Enter for new line" : "Ctrl/Cmd+Enter to send"}{loading ? " · Stop cancels the running task" : ""}
-            <span>{runtime === "codex" ? "Codex · subscription" : runtime === "kimi" ? "Kimi Code · account" : runtime === "claude" ? "Claude Code · subscription" : "API · provider billing"}</span>
+            <span>{runtime === "codex" ? "Codex · subscription" : runtime === "muse" ? "Muse Code · account" : runtime === "kimi" ? "Kimi Code · account" : runtime === "claude" ? "Claude Code · subscription" : "API · provider billing"}</span>
           </div>
         </div>
       </div>

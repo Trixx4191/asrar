@@ -16,13 +16,15 @@ _lock = RLock()
 class Preferences(BaseModel):
     model_config = ConfigDict(extra="forbid")
     agent_name: str = Field(default="Asrār", min_length=1, max_length=40)
-    runtime: Literal["codex", "claude", "kimi", "api"] = "codex"
+    runtime: Literal["codex", "claude", "kimi", "muse", "api"] = "codex"
     workspace: str = str(ROOT)
     codex_model: str | None = Field(default=None, max_length=160)
     reasoning_effort: str | None = Field(default=None, max_length=30)
     claude_model: str | None = Field(default=None, max_length=160)
     claude_effort: str | None = Field(default=None, max_length=30)
     kimi_model: str | None = Field(default=None, max_length=160)
+    muse_model: str | None = Field(default=None, max_length=160)
+    muse_effort: str | None = Field(default=None, max_length=30)
     access_mode: Literal["read-only", "workspace-write"] = "read-only"
     network_access: bool = False
     web_search: Literal["disabled", "cached", "live"] = "disabled"

@@ -34,10 +34,10 @@ const NAV = [
 
 function SubscriptionControls({ runtime, models, preferences, connected, busy, onChange }) {
   const modelKey = `${runtime}_model`;
-  const effortKey = runtime === "claude" ? "claude_effort" : "reasoning_effort";
+  const effortKey = runtime === "muse" ? "muse_effort" : runtime === "claude" ? "claude_effort" : "reasoning_effort";
   const current = preferences?.[modelKey];
   const selected = models.find(m => (m.model || m.id) === current) || models.find(m => m.isDefault);
-  const label = runtime === "kimi" ? "Kimi" : runtime === "claude" ? "Claude" : "Codex";
+  const label = runtime === "muse" ? "Muse" : runtime === "kimi" ? "Kimi" : runtime === "claude" ? "Claude" : "Codex";
   return <>
     <select aria-label={`${label} model`} disabled={busy || !connected} value={current || ""}
       onChange={e => onChange({ [modelKey]: e.target.value || null, ...(runtime === "kimi" ? {} : { [effortKey]: null }) })}>
@@ -83,6 +83,8 @@ export default function App() {
   const [models, setModels] = useState([]);
   const [codexModels, setCodexModels] = useState([]);
   const [claudeModels, setClaudeModels] = useState([]);
+  const [museModels, setMuseModels] = useState([]);
+  const [museConnection, setMuseConnection] = useState(null);
   const [kimiModels, setKimiModels] = useState([]);
   const [kimiConnection, setKimiConnection] = useState(null);
   const [preferences, setPreferences] = useState(null);
@@ -115,6 +117,15 @@ export default function App() {
       return result;
     } catch (e) { setError(e.message); }
   }, []);
+  const refreshMuse = useCallback(async () => {
+    try {
+      const result = await api("/connections/muse");
+      setMuseConnection(result);
+      const catalog = result.connected && !result.login ? await api("/connections/muse/models") : { models: [] };
+      setMuseModels(catalog.models || []);
+      return result;
+    } catch (e) { setError(e.message); }
+  }, []);
   const refreshKimi = useCallback(async () => {
     try {
       const result = await api("/connections/kimi");
@@ -136,9 +147,9 @@ export default function App() {
       await api("/health"); setBackendOk(true);
       const settings = await api("/connections/preferences");
       setPreferences(settings); setError("");
-      await Promise.all([refreshModels(), refreshConnection(), refreshClaude(), refreshKimi()]);
+      await Promise.all([refreshModels(), refreshConnection(), refreshClaude(), refreshKimi(), refreshMuse()]);
     } catch (e) { setBackendOk(false); setError(e.message); }
-  }, [refreshModels, refreshConnection, refreshClaude, refreshKimi]);
+  }, [refreshModels, refreshConnection, refreshClaude, refreshKimi, refreshMuse]);
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
     const timer = setInterval(async () => {
@@ -149,8 +160,8 @@ export default function App() {
   }, []);
   useEffect(() => {
     if (view === "models") refreshModels();
-    if (view === "connections") { refreshConnection(); refreshClaude(); refreshKimi(); }
-  }, [view, refreshModels, refreshConnection, refreshClaude, refreshKimi]);
+    if (view === "connections") { refreshConnection(); refreshClaude(); refreshKimi(); refreshMuse(); }
+  }, [view, refreshModels, refreshConnection, refreshClaude, refreshKimi, refreshMuse]);
   useEffect(() => { localStorage.setItem("asrar_force_model", forceModel || ""); }, [forceModel]);
   useEffect(() => {
     const media = matchMedia("(prefers-color-scheme: light)");
@@ -174,8 +185,8 @@ export default function App() {
   async function useRuntime(value) {
     if (await changeSettings({ runtime: value })) setView("chat");
   }
-  const selectedConnection = runtime === "kimi" ? kimiConnection : runtime === "claude" ? claudeConnection : runtime === "codex" ? connection : null;
-  const subscriptionName = runtime === "kimi" ? "Kimi" : runtime === "claude" ? "Claude" : "ChatGPT";
+  const selectedConnection = runtime === "muse" ? museConnection : runtime === "kimi" ? kimiConnection : runtime === "claude" ? claudeConnection : runtime === "codex" ? connection : null;
+  const subscriptionName = runtime === "muse" ? "Meta" : runtime === "kimi" ? "Kimi" : runtime === "claude" ? "Claude" : "ChatGPT";
   const agentName = preferences?.agent_name || "Asrār";
   const isElectron = !!window.asrar;
 
@@ -220,23 +231,27 @@ export default function App() {
             <div><span className="eyebrow">WORKSPACE</span><span className="workspace-path" title={preferences?.workspace}>{preferences?.workspace?.split(/[\\/]/).pop() || "Loading…"}</span></div>
             <div className="toolbar-controls">
               <select aria-label="Connection" disabled={busy || !preferences} value={runtime} onChange={e => changeSettings({ runtime: e.target.value })}>
-                <option value="codex">ChatGPT subscription</option><option value="claude">Claude subscription</option><option value="kimi">Kimi account</option><option value="api">API providers · paid separately</option>
+                <option value="codex">ChatGPT subscription</option><option value="claude">Claude subscription</option><option value="muse">Meta · Muse Code</option><option value="kimi">Kimi account</option><option value="api">API providers · paid separately</option>
               </select>
-              {runtime !== "api" ? <SubscriptionControls runtime={runtime} models={runtime === "kimi" ? kimiModels : runtime === "claude" ? claudeModels : codexModels} preferences={preferences} connected={selectedConnection?.connected} busy={busy} onChange={changeSettings} /> :
+              {runtime !== "api" ? <SubscriptionControls runtime={runtime} models={runtime === "muse" ? museModels : runtime === "kimi" ? kimiModels : runtime === "claude" ? claudeModels : codexModels} preferences={preferences} connected={selectedConnection?.connected} busy={busy} onChange={changeSettings} /> :
                 <select aria-label="API model" disabled={busy} value={forceModel || ""} onChange={e => setForceModel(e.target.value || null)}>
                   <option value="">Auto-select API model</option>{models.filter(m => m.enabled !== false).map(m => <option key={m.key} value={m.key}>{m.display_name}</option>)}
                 </select>}
               <button className="access-chip" onClick={() => setView("settings")}>{runtime === "kimi" ? "◇ Runtime permissions" : runtime !== "api" ? preferences?.access_mode === "workspace-write" ? "◇ Workspace access" : "◇ Read only" : "API mode"}</button>
             </div>
           </div>
-          {runtime !== "api" && !selectedConnection?.connected && <div className="onboarding-strip"><span>Use your {subscriptionName} plan to work with {runtime === "kimi" ? "Kimi Code" : runtime === "claude" ? "Claude Code" : "Codex"} in Asrār.</span><button className="primary-btn" onClick={() => setView("connections")}>Connect account →</button></div>}
+          {runtime !== "api" && !selectedConnection?.connected && <div className="onboarding-strip"><span>Use your {subscriptionName} plan to work with {runtime === "muse" ? "Muse Code" : runtime === "kimi" ? "Kimi Code" : runtime === "claude" ? "Claude Code" : "Codex"} in Asrār.</span><button className="primary-btn" onClick={() => setView("connections")}>Connect account →</button></div>}
           <Chat forceModel={forceModel} models={models} onForceModelChange={setForceModel} onModelsChanged={refreshModels} preferences={preferences} connection={selectedConnection} onConnect={() => setView("connections")} onBusyChange={setBusy} />
         </div>
-        {view === "connections" && <Connections connection={connection} refresh={refreshConnection} onUseCodex={() => useRuntime("codex")} onOpenModels={() => setView("models")} claudeConnection={claudeConnection} refreshClaude={refreshClaude} onUseClaude={() => useRuntime("claude")} kimiConnection={kimiConnection} refreshKimi={refreshKimi} onUseKimi={() => useRuntime("kimi")} />}
+        {view === "connections" && <Connections connection={connection} refresh={refreshConnection} onUseCodex={() => useRuntime("codex")} onOpenModels={() => setView("models")} claudeConnection={claudeConnection} refreshClaude={refreshClaude} onUseClaude={() => useRuntime("claude")} kimiConnection={kimiConnection} refreshKimi={refreshKimi} onUseKimi={() => useRuntime("kimi")} museConnection={museConnection} refreshMuse={refreshMuse} onUseMuse={async () => {
+          const wonder = museModels.find(m => m.id === "muse-wonder-1.0");
+          if (await changeSettings({ runtime: "muse", muse_model: wonder?.id || null,
+            muse_effort: wonder?.supportedReasoningEfforts?.some(e => e.reasoningEffort === "max") ? "max" : null })) setView("chat");
+        }} />}
         {view === "models" && <ModelRegistry />}
         {view === "skills" && <Skills />}
         {view === "history" && <TaskHistory />}
-        {view === "settings" && <Settings resolvedTheme={resolvedTheme} appearance={appearance} onAppearanceChange={changes => setAppearance(old => ({ ...old, ...changes }))} onAppearanceReset={() => { setAppearance(DEFAULT_APPEARANCE); setWallpaper("lilies"); }} wallpaperStorageError={wallpaperStorageError} onWallpaperUpload={uploadWallpaper} onWallpaperRemove={removeWallpaper} wallpapers={wallpapers} wallpaper={wallpaper} onWallpaperChange={setWallpaper} preferences={preferences} onSave={saveSettings} models={codexModels} claudeModels={claudeModels} />}
+        {view === "settings" && <Settings resolvedTheme={resolvedTheme} appearance={appearance} onAppearanceChange={changes => setAppearance(old => ({ ...old, ...changes }))} onAppearanceReset={() => { setAppearance(DEFAULT_APPEARANCE); setWallpaper("lilies"); }} wallpaperStorageError={wallpaperStorageError} onWallpaperUpload={uploadWallpaper} onWallpaperRemove={removeWallpaper} wallpapers={wallpapers} wallpaper={wallpaper} onWallpaperChange={setWallpaper} preferences={preferences} onSave={saveSettings} models={codexModels} claudeModels={claudeModels} museModels={museModels} />}
       </main>
     </div>
     <div className="status-bar"><span className="status-dot" style={{ background: backendOk === false ? "var(--red)" : backendOk ? "var(--green)" : "var(--yellow)" }} /><span>{backendOk === false ? "Backend offline" : backendOk ? "Connected locally" : "Connecting…"}</span><span className="status-runtime">{runtime !== "api" ? `${subscriptionName} subscription · no API fallback` : "API mode · provider billing applies"}</span></div>

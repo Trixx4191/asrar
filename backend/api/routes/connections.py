@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from core.codex_bridge import bridge, CodexError
 from core.claude_bridge import bridge as claude_bridge, ClaudeError
 from core.kimi_bridge import bridge as kimi_bridge, KimiError
+from core.muse_bridge import bridge as muse_bridge, MuseError
 from core.preferences import load_preferences, save_preferences
 
 
@@ -50,7 +51,7 @@ class ClaudeLoginCode(BaseModel):
 async def call(operation):
     try:
         return await operation
-    except (CodexError, ClaudeError, KimiError, OSError, TimeoutError) as exc:
+    except (CodexError, ClaudeError, KimiError, MuseError, OSError, TimeoutError) as exc:
         raise HTTPException(409, str(exc) or "The runtime did not respond. Reconnect and try again.") from exc
 
 
@@ -234,4 +235,57 @@ async def kimi_approve(req: DecisionRequest):
 @router.post("/kimi/stop")
 async def kimi_stop(req: StopRequest):
     await call(kimi_bridge.interrupt(req.conversation_id))
+    return {"success": True}
+
+
+@router.get("/muse")
+async def muse_status():
+    return await muse_bridge.status()
+
+
+@router.post("/muse/login")
+async def muse_login():
+    return await call(muse_bridge.begin_login())
+
+
+@router.post("/muse/login/cancel")
+async def muse_cancel_login():
+    await call(muse_bridge.cancel_login())
+    return {"success": True}
+
+
+@router.post("/muse/logout")
+async def muse_logout():
+    await call(muse_bridge.logout())
+    return {"success": True}
+
+
+@router.post("/muse/reconnect")
+async def muse_reconnect():
+    if muse_bridge.active:
+        raise HTTPException(409, "Stop running Muse tasks before reconnecting")
+    await muse_bridge.close()
+    return await muse_bridge.status()
+
+
+@router.get("/muse/models")
+async def muse_models():
+    return {"models": await call(muse_bridge.models())}
+
+
+@router.post("/muse/approve")
+async def muse_approve(req: DecisionRequest):
+    await call(muse_bridge.decide(req.conversation_id, req.action_id, req.approved))
+    return {"success": True}
+
+
+@router.post("/muse/answer")
+async def muse_answer(req: AnswerRequest):
+    await call(muse_bridge.answer(req.conversation_id, req.action_id, req.answers))
+    return {"success": True}
+
+
+@router.post("/muse/stop")
+async def muse_stop(req: StopRequest):
+    await call(muse_bridge.interrupt(req.conversation_id))
     return {"success": True}
