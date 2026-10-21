@@ -15,7 +15,7 @@ def profile_for(rows, access_mode):
     wanted = {"readonly"} if access_mode == "read-only" else {"askme"}
     for row in rows:
         names = {str(row.get(k, "")).lower().replace("-", "").replace("_", "").replace(" ", "") for k in ("profileId", "label")}
-        if row.get("available") and names & wanted:
+        if row.get("available") and row.get("reviewerAuthority") == "human" and names & wanted:
             return row["profileId"]
     raise MuseError("Muse does not offer the required permission profile. Update Muse Code; access was not relaxed.")
 

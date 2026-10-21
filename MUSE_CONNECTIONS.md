@@ -2,7 +2,7 @@
 
 Accounts & connections includes **Meta · Muse Code**. Sign in with Meta, approve the device code in your browser, then choose **Use Muse in chat** and start a new conversation. The button selects Muse Wonder at `max` effort when the account's catalog offers it. You can change the model and effort in the chat toolbar.
 
-Muse Wonder Full appears only when Meta returns it for your account. It requires Power Usage or Maximum Usage. Choosing `max` reasoning on Wonder does not select Wonder Full. Muse Code manages plan limits and Standard / Contributor mode; Contributor mode may permit Meta to train on submitted content. Asrār does not change that account setting.
+Muse Wonder Full appears only when Meta returns it for your account. It requires Power Usage or Maximum Usage. Choosing `max` reasoning on Wonder does not select Wonder Full. Asrār starts its Muse host in Standard mode (`--contributor-mode off`) without changing the stored account setting. Your plan’s Standard-mode limits apply.
 
 The integration drives the official `muse serve` runtime using Muse Session Protocol v1. Account and permission-profile methods are part of its experimental interface, so future runtime versions may require integration updates. No community adapter or additional Python SDK dependencies are required.
 
@@ -34,6 +34,6 @@ Use API models to register and test it after configuring your own credential loc
 
 ## Validation
 
-`tests/test_muse_connections.py` exercises a real subprocess running a deterministic fake MSP host. It checks account isolation, browser-flow controls, scoped single-use decisions, authoritative replies, session resume, stream cancellation, host death, access requirements, local-client/origin guards, and supported model/effort choices without provider billing. A real account authorization requires the account holder to finish Meta's browser flow.
+`tests/test_muse_connections.py` exercises a real subprocess running a deterministic fake MSP host. It checks account isolation, browser-flow controls, scoped single-use decisions, authoritative replies, session resume, stream cancellation, host death, access requirements, local-client/origin guards, and supported model/effort choices without provider billing. The installed native Muse 1.4.11 runtime also passed live initialization, private-profile validation, signed-out account status, and permission-catalog discovery with sandbox support available. No model inference was requested. A real account authorization requires the account holder to finish Meta's browser flow.
 
 References: [Meta model availability](https://dev.meta.ai/docs/models), [Muse permissions](https://dev.meta.ai/docs/muse-code/permissions), [official protocol documentation](https://meta-models.github.io/muse-code-sdk/next/).
