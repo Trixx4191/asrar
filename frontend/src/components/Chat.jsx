@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import nalaynSymbol from "../assets/nalayn.png";
 import ModelBadge from "./ModelBadge";
 import Markdown from "./Markdown";
@@ -171,38 +172,59 @@ function DiffBlock({ path, diff }) {
 
 function QuestionBanner({ pending, onAnswer, busy }) {
   const [answers, setAnswers] = useState({});
-  return <form className="approval-banner" onSubmit={e => { e.preventDefault(); onAnswer(answers); }}>
-    <strong>Your input is needed</strong>
-    {(pending.questions || []).map(question => <div key={question.id} className="question-field">
-      <label className="field-label">{question.question}
-        <input type={question.isSecret ? "password" : "text"} required maxLength={4000} autoComplete="off" value={answers[question.id] || ""} onChange={e => setAnswers(previous => ({ ...previous, [question.id]: e.target.value }))} />
-      </label>
-      {question.options?.length > 0 && <div className="question-options">{question.options.map(option => <button type="button" key={option.label} className={`secondary-btn ${answers[question.id] === option.label ? "selected" : ""}`} title={option.description} onClick={() => setAnswers(previous => ({ ...previous, [question.id]: option.label }))}>{option.label}<small>{option.description}</small></button>)}</div>}
-    </div>)}
-    <button className="primary-btn" disabled={busy}>{busy ? "Submitting…" : "Continue"}</button>
-  </form>;
+  const formRef = useRef(null);
+  useEffect(() => {
+    const previous = document.activeElement;
+    formRef.current?.querySelector("input, button")?.focus();
+    return () => { if (previous?.isConnected) previous.focus(); };
+  }, [pending.action_id]);
+  return createPortal(
+    <form ref={formRef} className="approval-banner approval-popup question-popup" role="dialog" aria-labelledby="question-title" aria-busy={busy} onSubmit={e => { e.preventDefault(); if (!busy) onAnswer(answers); }}>
+      <div className="approval-banner-text"><strong id="question-title">Your input is needed</strong></div>
+      <div className="approval-popup-details">
+        {(pending.questions || []).map(question => <div key={question.id} className="question-field">
+          <label className="field-label">{question.question}
+            <input type={question.isSecret ? "password" : "text"} required disabled={busy} maxLength={4000} autoComplete="off" placeholder="Type your answer…" value={answers[question.id] || ""} onChange={e => setAnswers(previous => ({ ...previous, [question.id]: e.target.value }))} />
+          </label>
+          {question.options?.length > 0 && <div className="question-options">{question.options.map(option => <button type="button" disabled={busy} key={option.label} aria-pressed={answers[question.id] === option.label} className={`approval-popup-button ${answers[question.id] === option.label ? "selected" : ""}`} title={option.description} onClick={() => setAnswers(previous => ({ ...previous, [question.id]: option.label }))}>{option.label}{option.description && <small>{option.description}</small>}</button>)}</div>}
+        </div>)}
+      </div>
+      <div className="approval-banner-actions"><button type="submit" className="approval-popup-button approval-popup-confirm" disabled={busy}>{busy ? "Submitting…" : "Continue"}</button></div>
+    </form>,
+    document.body
+  );
 }
 
 function ApprovalBanner({ pending, onDecide, busy }) {
+  const denyRef = useRef(null);
+  useEffect(() => {
+    if (!pending) return;
+    const previous = document.activeElement;
+    denyRef.current?.focus();
+    return () => { if (previous?.isConnected) previous.focus(); };
+  }, [pending?.action_id]);
   if (!pending) return null;
-  return (
-    <div className="approval-banner">
+  return createPortal(
+    <section className="approval-banner approval-popup" role="dialog" aria-labelledby="approval-title" aria-busy={busy}>
       <div className="approval-banner-text">
-        <strong>Approval needed</strong> — review this action before continuing:
+        <strong id="approval-title">Approval needed</strong>
       </div>
+      <div className="approval-popup-details">
       <pre className="approval-banner-command">{pending.command}</pre>
       {pending.cwd && <div className="field-help">Folder: {pending.cwd}</div>}
       {pending.reason && <p>{pending.reason}</p>}
       {pending.network && <p>Network access: {pending.network.host} ({pending.network.protocol})</p>}
+      </div>
       <div className="approval-banner-actions">
-        <button className="btn-brutal approval-approve" disabled={busy} onClick={() => onDecide(true)}>
+        <button className="approval-popup-button approval-popup-confirm" disabled={busy} onClick={() => onDecide(true)}>
           Approve &amp; run
         </button>
-        <button className="btn-brutal approval-deny" disabled={busy} onClick={() => onDecide(false)}>
+        <button ref={denyRef} className="approval-popup-button" disabled={busy} onClick={() => onDecide(false)}>
           Deny
         </button>
       </div>
-    </div>
+    </section>,
+    document.body
   );
 }
 
@@ -232,6 +254,29 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
   const [awayFromBottom, setAwayFromBottom] = useState(false);
   const stickToBottom = useRef(true);
   const [search, setSearch] = useState("");
+  const chatsMenuRef = useRef(null);
+  function closeChatsMenu() {
+    if (chatsMenuRef.current) chatsMenuRef.current.open = false;
+  }
+  useEffect(() => {
+    function dismiss(event) {
+      if (!chatsMenuRef.current?.contains(event.target)) closeChatsMenu();
+    }
+    function escape(event) {
+      if (event.key === "Escape" && chatsMenuRef.current?.open) {
+        closeChatsMenu();
+        chatsMenuRef.current.querySelector("summary")?.focus();
+      }
+    }
+    document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("focusin", dismiss);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("focusin", dismiss);
+      document.removeEventListener("keydown", escape);
+    };
+  }, []);
   const [chatRuntime, setChatRuntime] = useState(null);
   const [lastPrompt, setLastPrompt] = useState("");
   const [statusError, setStatusError] = useState("");
@@ -656,38 +701,32 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
 
   return (
     <div className="chat-with-rail">
-      {/* Conversation rail — persisted chats, backed by SQLite */}
-      <div className="chat-rail">
-        <div className="chat-rail-header">
-          <button className="chat-rail-new" disabled={loading} onClick={newChat} title="Ctrl/Cmd+Shift+O">+ New chat</button>
-          <input className="conversation-search" aria-label="Search conversations" placeholder="Search chats…" value={search} onChange={e => setSearch(e.target.value)} />
-        </div>
-        <div className="chat-rail-list">
-          {conversations.length === 0 ? (
-            <div className="chat-rail-empty">No saved chats yet</div>
-          ) : conversations.filter(c => c.title.toLowerCase().includes(search.toLowerCase())).map(c => (
-            <div
-              key={c.id}
-              className={`chat-rail-item ${c.id === conversationId ? "active" : ""}`}
-              onClick={() => loadConversation(c.id)}
-            >
-              <div className="chat-rail-item-row">
-                <span className="chat-rail-item-title">{c.title}</span>
-                <button
-                  className="chat-rail-item-delete"
-                  onClick={(e) => deleteConversation(c.id, e)}
-                  title="Delete" disabled={loading}
-                >✕</button>
-              </div>
-              <span className="chat-rail-item-meta">{c.message_count} msgs · {relativeLabel(c.updated_at)}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-
       <div className="chat-container">
-        {messages.length > 0 && <div className="conversation-actions"><button disabled={loading} onClick={exportConversation}>Export chat ↓</button><span>{chatRuntime === "codex" ? "ChatGPT subscription" : chatRuntime === "claude" ? "Claude subscription" : chatRuntime === "api" ? "API conversation" : ""}</span></div>}
-        <div className="mobile-new-chat"><button className="secondary-btn" disabled={loading} onClick={newChat}>+ New chat</button></div>
+        <div className="chat-minimal-toolbar">
+          <details className="chats-menu" ref={chatsMenuRef}>
+            <summary aria-label="Open chats"><span>Chats</span><span className="chats-menu-chevron" aria-hidden="true">⌄</span></summary>
+            <div className="chats-dropdown">
+              <div className="chats-dropdown-header">
+                <span>Conversations</span>
+                <button className="chats-new-button" disabled={loading} onClick={() => { newChat(); closeChatsMenu(); }} title="Ctrl/Cmd+Shift+O">+ New chat</button>
+              </div>
+              <input className="conversation-search" aria-label="Search conversations" placeholder="Search chats…" value={search} onChange={e => setSearch(e.target.value)} />
+              <div className="chats-dropdown-list">
+                {conversations.filter(c => c.title.toLowerCase().includes(search.toLowerCase())).map(c => (
+                  <div key={c.id} className={`chats-dropdown-row ${c.id === conversationId ? "active" : ""}`}>
+                    <button className="chats-open-button" disabled={loading} aria-current={c.id === conversationId ? "true" : undefined} onClick={() => { loadConversation(c.id); closeChatsMenu(); }}>
+                      <span>{c.title}</span><small>{relativeLabel(c.updated_at)}</small>
+                    </button>
+                    <button className="chats-delete-button" onClick={e => deleteConversation(c.id, e)} aria-label={`Delete ${c.title}`} title="Delete chat" disabled={loading}>×</button>
+                  </div>
+                ))}
+                {!conversations.some(c => c.title.toLowerCase().includes(search.toLowerCase())) && <div className="chats-dropdown-empty">{search ? "No matching chats" : "No saved chats yet"}</div>}
+              </div>
+            </div>
+          </details>
+          <span className="chat-current-title">{conversations.find(c => c.id === conversationId)?.title || "New chat"}</span>
+          {messages.length > 0 && <button className="chat-export-button" disabled={loading} onClick={exportConversation}>Export ↓</button>}
+        </div>
         <PlanPanel items={plan} />
         {runtimeMismatch && <div className="notice">This chat uses {chatRuntime === "codex" ? "your ChatGPT subscription" : chatRuntime === "claude" ? "your Claude subscription" : "an API provider"}. Switch back to that connection or start a new chat.</div>}
         <div className="chat-messages" onScroll={event => {

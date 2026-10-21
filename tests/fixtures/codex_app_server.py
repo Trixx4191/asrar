@@ -38,11 +38,14 @@ for line in sys.stdin:
     elif method == "model/list":
         result = {"data": [{"id": "test-codex", "model": "test-codex", "displayName": "Test Codex", "isDefault": True, "supportedReasoningEfforts": [{"reasoningEffort": "medium"}]}], "nextCursor": None}
     elif method in {"thread/start", "thread/resume"}:
-        if params.get("approvalPolicy") != "untrusted":
+        if params.get("approvalPolicy") != "on-request":
             send({"id": identifier, "error": {"message": "Expected guarded approval policy"}})
             continue
         result = {"thread": {"id": "thread-test"}}
     elif method == "turn/start":
+        if params.get("approvalPolicy") != "on-request":
+            send({"id": identifier, "error": {"message": "Expected sandbox escalation approval policy"}})
+            continue
         result = {"turn": {"id": "turn-test", "status": "inProgress"}}
     elif method == "account/rateLimits/read":
         result = {"rateLimits": {"primary": {"usedPercent": 23, "resetsAt": 1900000000}}}

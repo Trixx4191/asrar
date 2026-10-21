@@ -117,7 +117,9 @@ def _gate_destructive_commands(name: str, args: dict, conversation_id: str | Non
         return HookResult()
 
     command = (args.get("command") or "")
-    from tools.shell import check_command
+    from tools.shell import check_command, is_navigation_only
+    if is_navigation_only(command):
+        return HookResult()
     if check_command(command)["blocked"] or any(p in command.lower() for p in _CONFIRM_COMMAND_PATTERNS):
         action_id = ""
         if conversation_id:

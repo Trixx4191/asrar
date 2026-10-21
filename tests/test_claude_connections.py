@@ -149,6 +149,15 @@ class ClaudeSubscriptionTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(sandbox['allowUnsandboxedCommands'])
         self.assertEqual(sandbox['network']['deniedDomains'],['*'])
 
+    async def test_navigation_hook_allows_cd_but_still_asks_for_writes(self):
+        preferences.save_preferences({'access_mode':'workspace-write'})
+        await self.collect()
+        hook = SDK.clients[-1].options.hooks['PreToolUse'][0].hooks[0]
+        for command, expected in [('cd ..', 'allow'), ('cd /tmp && pwd', 'allow'),
+                                  ('cd /tmp && touch file', 'ask'), ('chmod 777 file', 'ask')]:
+            result = await hook({'tool_name':'Bash', 'tool_input':{'command':command}}, command, {})
+            self.assertEqual(result['hookSpecificOutput']['permissionDecision'], expected)
+
     async def test_outside_workspace_and_sandbox_escape_blocked(self):
         preferences.save_preferences({'access_mode':'workspace-write'})
         events=await self.collect('outside')

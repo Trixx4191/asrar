@@ -222,3 +222,27 @@ progress::-moz-progress-bar { background: var(--accent); }
 .claude-mark { color: #d9aa91; background: #d9aa9112; }
 .claude-code-form { margin-top: 20px; }
 .claude-code-form .secondary-btn { margin-top: 12px; }
+
+/* Keep permission requests compact without shifting the conversation. */
+.approval-popup {
+  position: fixed;
+  z-index: 1000;
+  right: 24px;
+  bottom: 110px;
+  box-sizing: border-box;
+  width: min(440px, calc(100vw - 32px));
+  max-height: min(420px, calc(100dvh - 140px));
+  margin: 0;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .3);
+}
+.approval-popup .approval-banner-text { margin: 0; }
+.approval-popup-details { min-height: 0; overflow-y: auto; overflow-wrap: anywhere; }
+.approval-popup-details p { font-size: 12px; margin: 8px 0; }
+.approval-popup .approval-banner-command { max-height: 150px; overflow: auto; }
+.approval-popup .approval-banner-actions { flex-shrink: 0; justify-content: flex-end; flex-wrap: wrap; }
+@media (max-width: 570px) { .approval-popup { right: 16px; } }
