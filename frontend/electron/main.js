@@ -48,7 +48,8 @@ function trustedFrame(event) {
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1440, height: 920, minWidth: 760, minHeight: 600,
-    titleBarStyle: "hidden", backgroundColor: "#101114",
+    frame: false, titleBarStyle: "hidden", transparent: true,
+    backgroundColor: "#00000000", roundedCorners: true,
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
