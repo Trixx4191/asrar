@@ -9,6 +9,7 @@ from core import memory
 from core.codex_chat import session_for, save_session
 from core.muse_bridge import bridge, MuseError
 from core.preferences import load_preferences
+from core.execution_policy import EFFICIENCY_INSTRUCTIONS
 
 
 def profile_for(rows, access_mode):
@@ -97,7 +98,7 @@ async def stream_chat(message, conversation_id, model=None, effort=None, context
         if active.get("stopped"):
             raise MuseError("Task stopped")
         instructions = ("You are Asrar, a local coding assistant. Respect the selected workspace and access controls. "
-                        "Explain your work and verify edits.\n" + settings.instructions)
+                        "Explain your work and verify edits.\n" + EFFICIENCY_INSTRUCTIONS + settings.instructions)
         if settings.web_search == "disabled":
             instructions += "\nDo not use web search tools."
         memory.add_message(conversation_id, "user", message)

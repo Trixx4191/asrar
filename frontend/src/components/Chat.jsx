@@ -1,11 +1,11 @@
-import { useState, useRef, useEffect } from "react";
+import { memo, useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
 import nalaynSymbol from "../assets/nalayn.png";
 import ModelBadge from "./ModelBadge";
 import Markdown from "./Markdown";
 import { apiFetch as fetch, api, API } from "../api";
 
-function ToolCall({ name, args, result, success }) {
+const ToolCall = memo(function ToolCall({ name, args, result, success }) {
   const [open, setOpen] = useState(false);
   const argStr = Object.entries(args || {})
     .map(([k, v]) => `${k}=${JSON.stringify(v).slice(0, 60)}`)
@@ -34,7 +34,7 @@ function ToolCall({ name, args, result, success }) {
       )}
     </div>
   );
-}
+});
 
 function PlanPanel({ items }) {
   if (!items || items.length === 0) return null;
@@ -56,7 +56,7 @@ function PlanPanel({ items }) {
   );
 }
 
-function Message({ msg, showActivity = true }) {
+const Message = memo(function Message({ msg, showActivity = true }) {
   const [copied, setCopied] = useState(false);
 
   return (
@@ -122,7 +122,7 @@ function Message({ msg, showActivity = true }) {
       {msg.usage?.total?.totalTokens != null && showActivity && <div className="routing-reason">{msg.usage.total.totalTokens.toLocaleString()} tokens in this thread</div>}
     </div>
   );
-}
+});
 
 function timeLabel(iso) {
   if (!iso) return "";

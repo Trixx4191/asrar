@@ -136,27 +136,38 @@ class ClaudeSubscriptionTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_write_diff_and_sandbox_fail_closed_configuration(self):
         preferences.save_preferences({'access_mode':'workspace-write'})
-        stream=claude_chat.stream_chat('write',self.conv)
-        async for event in stream:
-            if event.get('approval_required'):
-                await self.bridge.decide(self.conv,event['action_id'],True)
-                break
-        remaining=[event async for event in stream]
-        self.assertTrue(any(event.get('diff') for event in remaining))
+        events=await self.collect('write')
+        self.assertFalse(any(event.get('approval_required') for event in events))
+        self.assertTrue(any(event.get('diff') for event in events))
         self.assertEqual((self.root/'example.txt').read_text(),'new content\n')
         sandbox=SDK.clients[-1].options.sandbox
         self.assertTrue(sandbox['failIfUnavailable'])
         self.assertFalse(sandbox['allowUnsandboxedCommands'])
         self.assertEqual(sandbox['network']['deniedDomains'],['*'])
 
-    async def test_navigation_hook_allows_cd_but_still_asks_for_writes(self):
+    async def test_routine_tools_are_automatic_and_risky_commands_ask(self):
         preferences.save_preferences({'access_mode':'workspace-write'})
         await self.collect()
         hook = SDK.clients[-1].options.hooks['PreToolUse'][0].hooks[0]
         for command, expected in [('cd ..', 'allow'), ('cd /tmp && pwd', 'allow'),
-                                  ('cd /tmp && touch file', 'ask'), ('chmod 777 file', 'ask')]:
+                                  ('cd /tmp && touch file', None), ('chmod 777 file', 'ask')]:
             result = await hook({'tool_name':'Bash', 'tool_input':{'command':command}}, command, {})
-            self.assertEqual(result['hookSpecificOutput']['permissionDecision'], expected)
+            self.assertEqual(result.get('hookSpecificOutput', {}).get('permissionDecision'), expected)
+
+    async def test_read_search_and_edit_callbacks_do_not_prompt(self):
+        preferences.save_preferences({'access_mode':'workspace-write', 'web_search':'live'})
+        await self.collect()
+        options = SDK.clients[-1].options
+        self.assertTrue(options.sandbox['autoAllowBashIfSandboxed'])
+        for name, values in [('Read', {'file_path': str(self.root/'example.txt')}),
+                             ('Grep', {'pattern': 'hello'}),
+                             ('Edit', {'file_path': str(self.root/'example.txt')}),
+                             ('WebSearch', {'query': 'documentation'})]:
+            result = await asyncio.wait_for(options.can_use_tool(name, values, None), 1)
+            self.assertIsInstance(result, PermissionResultAllow)
+        result = await options.can_use_tool('Read', {'file_path': str(self.root/'auth/token')}, None)
+        self.assertIsInstance(result, PermissionResultDeny)
+        self.assertFalse(self.bridge.approvals)
 
     async def test_outside_workspace_and_sandbox_escape_blocked(self):
         preferences.save_preferences({'access_mode':'workspace-write'})

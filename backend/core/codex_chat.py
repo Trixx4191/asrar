@@ -8,6 +8,7 @@ from pathlib import Path
 from core import memory
 from core.codex_bridge import bridge, AUTH_HOME, CodexError
 from core.preferences import load_preferences
+from core.execution_policy import EFFICIENCY_INSTRUCTIONS
 
 
 def session_for(conversation_id):
@@ -86,9 +87,10 @@ async def stream_chat(message, conversation_id, model=None, effort=None, context
                          "config": {"web_search": settings.web_search},
                          "developerInstructions": "You are Asrār, a local coding assistant powered by Codex. "
                          "Explain your work clearly, respect the selected workspace, and verify edits when appropriate. "
-                         "Run harmless directory navigation (cd, pwd) automatically inside the sandbox. "
-                         "Do not request confirmation merely to change directories. "
-                         "Treat writes and permission changes with caution; obtain approval for actions beyond the sandbox.\n" + settings.instructions}
+                         "Read and search files, navigate directories, make routine workspace edits, and run sandboxed commands automatically within the selected access mode. "
+                         "Do not ask for confirmation for these routine actions or repeat approvals already granted. "
+                         "Obtain approval for destructive actions and access beyond the sandbox.\n"
+                         + EFFICIENCY_INSTRUCTIONS + settings.instructions}
         if existing:
             await bridge.request("thread/resume", {**thread_params, "threadId": existing["thread_id"], "excludeTurns": True})
             thread_id = existing["thread_id"]

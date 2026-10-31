@@ -37,6 +37,8 @@ from core.router import route, route_async, load_registry
 from core import supervisor, memory, hooks, orchestrator, skills as skill_catalog
 from core import context as context_mgr
 from core import registry as model_registry
+from core.execution_policy import EFFICIENCY_INSTRUCTIONS
+from core.progress import ToolProgressGuard, STALLED_TOOL_RESPONSE
 from providers import get_provider
 from providers.base import Message
 from tools import web, files, shell, diagnosis, testing, codesearch
@@ -68,13 +70,12 @@ IMPORTANT AGENTIC BEHAVIOR:
   Report the test result: saved/configured is not the same as working. If a model
   uses a different API protocol, explain the missing adapter rather than guessing.
 - When asked to create, edit, or modify files/projects, use your tools to actually do it — don't just describe what you'd do.
-- Use tools for each step. Verify success. Report exact paths and results.
-- Think step-by-step and chain tool calls when needed.
+- Use tools to do the requested work. Verify success and report exact paths and results.
 - Repository workflow skills are available as reusable playbooks. When a task matches
-    one, call list_skills to discover it and use_skill to load it before acting. Skills
+    one, use the supplied skill catalog and call use_skill to load it before acting.
+    Call list_skills only if the catalog is unavailable. Skills
     provide guidance only; use the normal tools and approval flow for real operations.
-- For anything that takes more than one tool call (a project with multiple files, multi-step
-  research, anything with 3+ distinct steps), call update_plan FIRST to lay out the steps, then keep
+- For a task with three or more distinct steps, call update_plan FIRST to lay out the steps, then keep
   it current: mark a step in_progress when you start it, completed when you finish it. This keeps
   your progress visible instead of the user having to guess what's happening. Skip it for simple,
   single-step asks — it's not needed for those.
@@ -119,7 +120,7 @@ Rules:
 - Never run destructive commands without a warning.
 - Report the exact file paths of anything you create or modify.
 - If a tool fails, try an alternative approach and say what you tried.
-"""
+""" + "\n\n" + EFFICIENCY_INSTRUCTIONS
 
 # ─────────────────────────────────────────────────────────────
 # Tool schemas  (OpenAI function-calling format)
@@ -715,7 +716,7 @@ async def _dispatch_tool(name: str, args: dict, conversation_id: str | None = No
             return ("" if result["ready"] else "Error: model is not ready. ") + json.dumps(result)
 
         elif name == "read_file":
-            r = files.read_file(args["path"], max_chars=args.get("max_chars", 8000))
+            r = await asyncio.to_thread(files.read_file, args["path"], max_chars=args.get("max_chars", 8000))
             return r.content if r.success else f"Error: {r.error}"
 
         elif name == "write_file":
@@ -754,7 +755,7 @@ async def _dispatch_tool(name: str, args: dict, conversation_id: str | None = No
             return r.content if r.success else f"Error: {r.error}"
 
         elif name == "list_dir":
-            r = files.list_dir(args.get("path", "."))
+            r = await asyncio.to_thread(files.list_dir, args.get("path", "."))
             return r.content if r.success else f"Error: {r.error}"
 
         elif name == "download_url":
@@ -798,7 +799,7 @@ async def _dispatch_tool(name: str, args: dict, conversation_id: str | None = No
             return r.report if r.success else f"Error: {r.error}"
 
         elif name == "search_code":
-            r = codesearch.search_code(
+            r = await asyncio.to_thread(codesearch.search_code,
                 pattern=args["pattern"],
                 path=args.get("path", "."),
                 glob=args.get("glob"),
@@ -807,7 +808,7 @@ async def _dispatch_tool(name: str, args: dict, conversation_id: str | None = No
             return codesearch.format_search_result(r)
 
         elif name == "find_files":
-            r = codesearch.find_files(pattern=args["pattern"], path=args.get("path", "."))
+            r = await asyncio.to_thread(codesearch.find_files, pattern=args["pattern"], path=args.get("path", "."))
             return codesearch.format_find_files_result(r)
 
         elif name == "list_skills":
@@ -877,19 +878,19 @@ async def _dispatch_tool(name: str, args: dict, conversation_id: str | None = No
         elif name == "git_status":
             if git_ops is None:
                 return "Error: git_ops module not available"
-            r = git_ops.git_status(args.get("path", "."))
+            r = await asyncio.to_thread(git_ops.git_status, args.get("path", "."))
             return git_ops.format_git_result(r)
 
         elif name == "git_diff":
             if git_ops is None:
                 return "Error: git_ops module not available"
-            r = git_ops.git_diff(args.get("path", "."), staged=args.get("staged", False))
+            r = await asyncio.to_thread(git_ops.git_diff, args.get("path", "."), staged=args.get("staged", False))
             return git_ops.format_git_result(r)
 
         elif name == "git_log":
             if git_ops is None:
                 return "Error: git_ops module not available"
-            r = git_ops.git_log(args.get("path", "."), n=args.get("n", 10))
+            r = await asyncio.to_thread(git_ops.git_log, args.get("path", "."), n=args.get("n", 10))
             return git_ops.format_git_result(r)
 
         elif name == "git_commit":
@@ -904,13 +905,13 @@ async def _dispatch_tool(name: str, args: dict, conversation_id: str | None = No
         elif name == "list_processes":
             if process_mgr is None:
                 return "Error: process_mgr not available"
-            r = process_mgr.list_processes(limit=args.get("limit", 30), sort_by=args.get("sort_by", "cpu"))
+            r = await asyncio.to_thread(process_mgr.list_processes, limit=args.get("limit", 30), sort_by=args.get("sort_by", "cpu"))
             return process_mgr.format_process_result(r)
 
         elif name == "inspect_process":
             if process_mgr is None:
                 return "Error: process_mgr not available"
-            r = process_mgr.inspect_process(int(args["pid"]))
+            r = await asyncio.to_thread(process_mgr.inspect_process, int(args["pid"]))
             return process_mgr.format_process_result(r)
 
         elif name == "kill_process":
@@ -938,7 +939,7 @@ async def _dispatch_tool(name: str, args: dict, conversation_id: str | None = No
         elif name == "semantic_search":
             if semantic is None:
                 return "Error: semantic module not available"
-            r = semantic.semantic_search(
+            r = await asyncio.to_thread(semantic.semantic_search,
                 query=args["query"],
                 path=args.get("path", "."),
                 glob=args.get("glob"),
@@ -1007,6 +1008,22 @@ async def _call_tool(name: str, args: dict, conversation_id: str | None = None) 
 
 
 _TOOL_FAILURE_MARKERS = ("error:", "❌", "⛔")
+
+# Repeated successful commands or process/network polls may be intentional.
+# Only static observations, plan churn, and failed calls count as stalled work.
+_LOOP_GUARD_TOOLS = {
+    "read_file", "list_dir", "search_code", "find_files", "semantic_search",
+    "git_status", "git_diff", "git_log", "list_skills", "use_skill",
+    "list_models", "update_plan",
+}
+
+
+def _stalled_tool_round(progress: ToolProgressGuard, tool_calls: list[dict], results: list[str]) -> bool:
+    for call, result in zip(tool_calls, results):
+        if call["name"] not in _LOOP_GUARD_TOOLS and not result.lstrip().lower().startswith(_TOOL_FAILURE_MARKERS):
+            progress.reset()
+            return False
+    return progress.stalled(tool_calls, results)
 
 
 def _track_verification_state(name: str, args: dict, result: str, conversation_id: str) -> None:
@@ -1154,6 +1171,8 @@ async def run_task(
     all_tool_calls: list[dict] = []
     last_error = None
     success = False
+    raced_attempts: set[str] = set()
+    raced_results: dict[str, tuple] = {}
 
 
     # Speculative race for fast_chat: fire top-2 models, first good answer wins
@@ -1180,18 +1199,27 @@ async def run_task(
             msgs = [{"role": getattr(m, "role", "user"), "content": getattr(m, "content", "")} for m in history]
             msgs.append({"role": "user", "content": user_input})
 
-            def _make(p=prov, mid=model["id"], pn=model["provider"], ms=msgs):
+            def _make(key=mk, p=prov, mid=model["id"], pn=model["provider"], ms=msgs):
                 async def _call():
-                    return await _llm_call_with_tools(p, mid, ms, system_prompt, pn)
+                    raced_attempts.add(key)
+                    try:
+                        result = await _llm_call_with_tools(p, mid, ms, system_prompt, pn)
+                    except Exception as exc:
+                        result = (f"Provider error: {type(exc).__name__}", [])
+                    raced_results[key] = result
+                    return result
                 return _call
             race_fns.append(_make())
             race_meta.append((mk, model))
 
         if len(race_fns) >= 2:
+            race_winner_key = None
             try:
                 idx, result = await orchestrator.race_models(race_fns, timeout=20.0)
                 text, tool_calls = result
-                if text and not _is_provider_error_text(text):
+                if not _is_provider_error_text(text) and (text or tool_calls):
+                    race_winner_key = race_meta[idx][0]
+                if text and not _is_provider_error_text(text) and not tool_calls:
                     mk, model = race_meta[idx]
                     orchestrator.record_success(model["provider"])
                     decision.selected_model = model
@@ -1208,8 +1236,30 @@ async def run_task(
                         "routing_reason": decision.reason,
                         "tool_calls": [],
                     }
-            except Exception:
-                pass  # fall through to sequential path
+            except Exception as exc:
+                last_error = f"Speculative requests did not complete: {type(exc).__name__}"
+
+            # Reuse completed responses containing tools. Failed or cancelled
+            # candidates have already spent their initial request budget; only
+            # untried candidates may receive a fresh initial request below.
+            useful_race_keys = set()
+            for key, raced_model in race_meta:
+                if key not in raced_attempts:
+                    continue
+                response = raced_results.get(key)
+                if response is not None:
+                    text, tool_calls = response
+                    if not _is_provider_error_text(text) and (text or tool_calls):
+                        useful_race_keys.add(key)
+                        continue
+                    last_error = f"{raced_model['display_name']}: {text or 'empty response'}"
+                    if _is_provider_error_text(text):
+                        orchestrator.record_failure(raced_model["provider"])
+            candidate_keys = [key for key in candidate_keys
+                              if key not in raced_attempts or key in useful_race_keys]
+            if race_winner_key in candidate_keys:
+                candidate_keys.remove(race_winner_key)
+                candidate_keys.insert(0, race_winner_key)
 
     for model_key in candidate_keys:
         model = registry["models"].get(model_key)
@@ -1221,7 +1271,7 @@ async def run_task(
             continue
         if not provider.is_available():
             continue
-        if not orchestrator.is_available(model["provider"]):
+        if model_key not in raced_results and not orchestrator.is_available(model["provider"]):
             last_error = f"{model['display_name']}: provider circuit open (too many recent failures)"
             continue
 
@@ -1235,21 +1285,26 @@ async def run_task(
         attempt_tool_calls: list[dict] = []
         attempt_text = ""
         attempt_failed = False
+        attempt_incomplete = False
+        progress = ToolProgressGuard()
 
         for iteration in range(10):
-            text, tool_calls = await orchestrator.call_with_retry(
-                lambda: _llm_call_with_tools(
-                    provider=provider,
-                    model_id=model["id"],
-                    messages=attempt_messages,
-                    system=system_prompt,
-                    provider_name=model["provider"],
-                ),
-                on_retry=lambda attempt, delay, err: _log({
-                    "retry": True, "model": model["display_name"],
-                    "attempt": attempt + 1, "delay": delay, "error": err[:200],
-                }),
-            )
+            if iteration == 0 and model_key in raced_results:
+                text, tool_calls = raced_results.pop(model_key)
+            else:
+                text, tool_calls = await orchestrator.call_with_retry(
+                    lambda: _llm_call_with_tools(
+                        provider=provider,
+                        model_id=model["id"],
+                        messages=attempt_messages,
+                        system=system_prompt,
+                        provider_name=model["provider"],
+                    ),
+                    on_retry=lambda attempt, delay, err: _log({
+                        "retry": True, "model": model["display_name"],
+                        "attempt": attempt + 1, "delay": delay, "error": err[:200],
+                    }),
+                )
 
             if _is_provider_error_text(text) and not tool_calls:
                 last_error = f"{model['display_name']}: {text}"
@@ -1349,6 +1404,15 @@ async def run_task(
                         "content": result,
                     })
 
+            if _stalled_tool_round(progress, tool_calls, tool_results):
+                attempt_text = STALLED_TOOL_RESPONSE
+                attempt_incomplete = True
+                _log({"tool_loop_stopped": True, "model": model["display_name"], "iteration": iteration + 1})
+                break
+        else:
+            attempt_text = "Stopped after the tool-round limit; this task is incomplete."
+            attempt_incomplete = True
+
         if attempt_failed:
             if any(call["tool"] not in orchestrator.READ_ONLY_TOOLS
                    and call["tool"] not in {"update_plan", "rollback_plan"}
@@ -1358,13 +1422,16 @@ async def run_task(
                                 "automatic replay was stopped to avoid repeating side effects. " + str(last_error),
                     "model_used": model["display_name"], "task_type": decision.task_type,
                     "routing_reason": decision.reason, "tool_calls": attempt_tool_calls,
+                    "incomplete": True,
                 }
             continue
 
         if not attempt_text:
-            attempt_text = "Stopped after the tool-round limit; this task is incomplete."
+            attempt_text = "No final answer was returned; this task is incomplete."
+            attempt_incomplete = True
         if conversation_id and memory.get_verification_state(conversation_id)["dirty"]:
             attempt_text += "\n\nVerification is still outstanding for changed code; this work is not verified."
+            attempt_incomplete = True
 
         success = True
         orchestrator.record_success(model["provider"])
@@ -1383,6 +1450,7 @@ async def run_task(
             "task_type": decision.task_type,
             "routing_reason": decision.reason,
             "tool_calls": [],
+            "incomplete": True,
         }
 
     _log({
@@ -1408,6 +1476,7 @@ async def run_task(
         "task_type": decision.task_type,
         "routing_reason": decision.reason,
         "tool_calls": all_tool_calls,
+        "incomplete": attempt_incomplete,
     }
 
 
@@ -1510,6 +1579,8 @@ async def run_task_stream(
         attempt_tool_calls: list[dict] = []
         attempt_text = ""
         attempt_failed = False
+        attempt_incomplete = False
+        progress = ToolProgressGuard()
 
         # Emit meta once we pick a working candidate (may update on fallback)
         yield {
@@ -1731,6 +1802,15 @@ async def run_task_stream(
                         "content": result,
                     })
 
+            if _stalled_tool_round(progress, tool_calls, tool_results):
+                attempt_text = STALLED_TOOL_RESPONSE
+                attempt_incomplete = True
+                _log({"tool_loop_stopped": True, "model": model["display_name"], "iteration": iteration + 1, "stream": True})
+                break
+        else:
+            attempt_text = "Stopped after the tool-round limit; this task is incomplete."
+            attempt_incomplete = True
+
         if attempt_failed:
             if any(call["tool"] not in orchestrator.READ_ONLY_TOOLS
                    and call["tool"] not in {"update_plan", "rollback_plan"}
@@ -1746,9 +1826,11 @@ async def run_task_stream(
             continue
 
         if not attempt_text:
-            attempt_text = "Stopped after the tool-round limit; this task is incomplete."
+            attempt_text = "No final answer was returned; this task is incomplete."
+            attempt_incomplete = True
         if conversation_id and memory.get_verification_state(conversation_id)["dirty"]:
             attempt_text += "\n\nVerification is still outstanding for changed code; this work is not verified."
+            attempt_incomplete = True
 
         success = True
         orchestrator.record_success(provider_name)
@@ -1796,4 +1878,5 @@ async def run_task_stream(
         "model_used": decision.selected_model["display_name"],
         "task_type": decision.task_type,
         "routing_reason": decision.reason,
+        "incomplete": attempt_incomplete,
     }

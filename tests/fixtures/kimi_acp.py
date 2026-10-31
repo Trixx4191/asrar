@@ -47,9 +47,9 @@ for line in sys.stdin:
         if text.endswith('fail'):
             send({'id': req['id'], 'error': {'code': -32001, 'message': 'NEVER_EXPOSE'}})
             continue
-        if text.endswith('approval'):
+        if text.endswith(('approval', 'read permission', 'search permission')):
             pending = req
-            send({'id': 'permission-test', 'method': 'session/request_permission', 'params': {'sessionId': 'kimi-test', 'toolCall': {'title': 'Edit file', 'kind': 'edit'}, 'options': [{'optionId': 'allow', 'kind': 'allow_once'}, {'optionId': 'deny', 'kind': 'reject_once'}]}})
+            send({'id': 'permission-test', 'method': 'session/request_permission', 'params': {'sessionId': 'kimi-test', 'toolCall': {'title': 'Edit file', 'kind': 'read' if text.endswith('read permission') else 'search' if text.endswith('search permission') else 'edit'}, 'options': [{'optionId': 'allow', 'kind': 'allow_once'}, {'optionId': 'deny', 'kind': 'reject_once'}]}})
             continue
         send({'method': 'session/update', 'params': {'sessionId': 'kimi-test', 'update': {'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'Hello from Kimi.'}}}})
         reply(req, {'stopReason': 'end_turn'})

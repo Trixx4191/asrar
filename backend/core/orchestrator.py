@@ -173,10 +173,13 @@ async def stream_with_retry(stream_fn, *, max_retries: int = 1, first_event_time
         emitted = False
         retry_error = None
         stream = stream_fn(**kwargs)
+        loop = asyncio.get_running_loop()
+        first_output_deadline = loop.time() + first_event_timeout
         try:
             while True:
                 try:
-                    event = await asyncio.wait_for(anext(stream), timeout=45 if emitted else first_event_timeout)
+                    timeout = 45 if emitted else max(0, first_output_deadline - loop.time())
+                    event = await asyncio.wait_for(anext(stream), timeout=timeout)
                 except StopAsyncIteration:
                     break
                 response = event.get("response") if event.get("type") == "done" else None
@@ -184,7 +187,9 @@ async def stream_with_retry(stream_fn, *, max_retries: int = 1, first_event_time
                         and is_retryable_error(response.error or "") and attempt < max_retries):
                     retry_error = response.error
                     break
-                if event.get("type") in ("token", "tool_call_delta"):
+                if ((event.get("type") == "token" and event.get("text"))
+                        or (event.get("type") == "tool_call_delta" and any(
+                            event.get(key) for key in ("id", "name", "arguments")))):
                     emitted = True
                 yield event
         finally:
@@ -250,7 +255,7 @@ async def run_tool_calls(tool_calls: list[dict], call_tool_fn) -> list[str]:
 
 # ─────────────────────────────────────────────────────────────
 # Speculative dual-model race (fast_chat / simple tasks)
-# Fire top-2 candidates; first successful non-empty text wins.
+# Fire top-2 candidates; first useful text or tool response wins.
 # ─────────────────────────────────────────────────────────────
 
 async def race_models(
@@ -260,46 +265,52 @@ async def race_models(
 ) -> tuple[int, object]:
     """
     callables: list of zero-arg async callables each returning a result.
-    Returns (winner_index, result). Cancels the losers.
+    Returns (winner_index, result). Waits past failed/empty completions for a
+    useful answer, then cancels and drains the losers. Each callable is invoked
+    once, including when the race times out or every candidate fails.
     """
     if not callables:
         raise ValueError("race_models requires at least one callable")
-    if len(callables) == 1:
-        return 0, await callables[0]()
-
     tasks = [asyncio.create_task(fn()) for fn in callables]
-    done, pending = await asyncio.wait(
-        tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
-    )
-    winner_idx = None
-    winner_result = None
-    for i, task in enumerate(tasks):
-        if task in done and not task.cancelled():
-            try:
-                result = task.result()
-            except Exception:
-                continue
-            # Prefer a "good" result: for (text, tool_calls) tuples, non-error text
-            if isinstance(result, tuple) and len(result) >= 1:
-                text = result[0]
-                if isinstance(text, str) and text.strip() and not text.startswith("Provider HTTP"):
-                    winner_idx = i
-                    winner_result = result
-                    break
-            else:
-                winner_idx = i
-                winner_result = result
-                break
-    for task in pending:
-        task.cancel()
-    if winner_idx is None:
-        # Fall back to first completed even if error-like
-        for i, task in enumerate(tasks):
-            if task.done() and not task.cancelled():
-                try:
-                    return i, task.result()
-                except Exception as e:
+    pending = set(tasks)
+    deadline = asyncio.get_running_loop().time() + timeout
+    fallback = None
+    failures = []
+    try:
+        while pending:
+            done, pending = await asyncio.wait(
+                pending,
+                timeout=max(0, deadline - asyncio.get_running_loop().time()),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                if fallback is not None:
+                    return fallback
+                raise TimeoutError("Speculative model race timed out")
+            for i, task in enumerate(tasks):
+                if task not in done or task.cancelled():
                     continue
-        # Everything failed — await first and surface
-        return 0, await callables[0]()
-    return winner_idx, winner_result
+                try:
+                    result = task.result()
+                except Exception as exc:
+                    failures.append(exc)
+                    continue
+                if not isinstance(result, tuple):
+                    return i, result
+                text = result[0] if result else None
+                if len(result) >= 2 and result[1]:
+                    return i, result
+                if isinstance(text, str) and text.strip() and not is_provider_error(text):
+                    return i, result
+                if fallback is None:
+                    fallback = (i, result)
+        if fallback is not None:
+            return fallback
+        if failures:
+            raise failures[0]
+        raise RuntimeError("All speculative model calls were cancelled")
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
