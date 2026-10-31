@@ -55,6 +55,7 @@ class ChatResponse(BaseModel):
     routing_reason: str
     tool_calls: list[dict]
     conversation_id: str
+    incomplete: bool = False
 
 
 @router.post("", response_model=ChatResponse)

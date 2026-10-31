@@ -150,6 +150,13 @@ Streaming displays routing and first-token timings. A stalled provider has a
 any output. Automatic fallback stops after mutating tool execution to avoid
 replaying side effects. These are runtime controls, not an OS sandbox.
 
+Independent filesystem, search, and Git reads run off the streaming event loop.
+Three identical inspection/tool-result rounds stop API and Claude tasks with an
+explicit incomplete result; successful commands and process polling remain allowed.
+Clear hybrid-routing requests and short continuations avoid classifier requests.
+Claude task startup reuses its verified account for model discovery, and streaming
+chat reuses rendered historical messages instead of reparsing them on every token.
+
 See [v0.13 upgrade notes](UPGRADE_NOTES_v0.13.md) for validation, sources, and
 remaining limitations.
 

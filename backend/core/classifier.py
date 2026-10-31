@@ -1,9 +1,8 @@
 """
 Task Classifier — Hybrid (keyword + model-backed)
 
-Fast path: keyword scoring (zero latency).
-Deep path: when confidence is low OR conversation context is available,
-a lightweight model call re-classifies with history awareness.
+Fast path: keyword scoring and short follow-up context (no model call).
+Deep path: optional, bounded model classification for uncertain requests.
 """
 
 from __future__ import annotations
@@ -91,6 +90,12 @@ TASK_SIGNALS: dict[str, list[str]] = {
 }
 
 LOW_CONFIDENCE_THRESHOLD = 0.55
+
+_CONTINUATION_RE = re.compile(
+    r"(?:(?:yes|yeah|yep|ok|okay|sure|alright)(?: please)?|sounds good|"
+    r"(?:(?:yes|yeah|yep|ok|okay|sure|alright) )?(?:please )?"
+    r"(?:go ahead|go on|continue|proceed|do it|do that|keep going|carry on)(?: please)?)"
+)
 
 CLASSIFY_SYSTEM = """You are a precise task classifier for an agentic AI assistant.
 Given the user message (and optional recent conversation context), output ONLY a JSON object:
@@ -268,29 +273,35 @@ async def classify_task_async(
     """
     Hybrid classifier.
     1. Keyword score (instant).
-    2. If confidence high and no history → return keyword.
-    3. Otherwise try fast model with conversation context.
+    2. Retain the recent task for short continuations; return confident local intent.
+    3. In hybrid mode, try a fast model only for uncertain requests.
     4. Prefer model when it succeeds and disagrees with higher confidence.
     """
     kw = _keyword_classify(user_input)
 
+    normalized = re.sub(r"[\s,!.]+", " ", user_input.lower()).strip()
+    is_continuation = bool(_CONTINUATION_RE.fullmatch(normalized))
+    if history and len(user_input.split()) <= 8 and (kw.task_type == "general" or is_continuation):
+        for message in reversed(history):
+            if message.get("role") != "user":
+                continue
+            previous_input = str(message.get("content") or "")
+            previous_normalized = re.sub(r"[\s,!.]+", " ", previous_input.lower()).strip()
+            if _CONTINUATION_RE.fullmatch(previous_normalized):
+                continue
+            previous = _keyword_classify(previous_input)
+            if previous.task_type != "general":
+                previous.raw_input = user_input
+                previous.reason = "Short follow-up: retained recent user task type"
+                return previous
+
     # Routing must not add an LLM round trip to every user message. Hybrid
     # classification is opt-in and bounded independently of provider timeouts.
     if force_keyword or os.getenv("ASRAR_ROUTING_MODE", "fast").lower() != "hybrid":
-        if kw.task_type == "general" and history and len(user_input.split()) <= 8:
-            for message in reversed(history):
-                if message.get("role") == "user":
-                    previous = _keyword_classify(str(message.get("content") or ""))
-                    if previous.task_type != "general":
-                        previous.raw_input = user_input
-                        previous.reason = "Short follow-up: retained recent user task type"
-                        return previous
         return kw
 
     has_context = bool(history and len(history) >= 2)
-    needs_model = kw.confidence < LOW_CONFIDENCE_THRESHOLD or has_context
-
-    if not needs_model:
+    if kw.confidence >= LOW_CONFIDENCE_THRESHOLD:
         return kw
 
     try:

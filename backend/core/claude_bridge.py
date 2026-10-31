@@ -247,8 +247,12 @@ class ClaudeBridge:
             marker.chmod(0o600)
         return hashlib.sha256(((account.get("email") or "") + marker.read_text()).encode()).hexdigest()
 
-    async def models(self):
-        account = await self.require_account()
+    async def models(self, account=None):
+        # Task startup has already checked the account. Reuse that result so
+        # even a cached catalog does not spawn a second auth-status process.
+        # Direct catalog requests still perform their own fresh account check.
+        if account is None:
+            account = await self.require_account()
         scope = self.scope(account)
         async with self._catalog_lock:
             if self._catalog is not None and scope == self._catalog_scope and time.monotonic() - self._catalog_time < 60:

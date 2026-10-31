@@ -108,6 +108,13 @@ class KimiConnectionsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(remaining[-1]['response'], 'Approved')
         self.assertFalse(self.bridge.approvals)
 
+    async def test_reads_and_searches_do_not_require_confirmation(self):
+        for message in ('read permission', 'search permission'):
+            events = await asyncio.wait_for(self.collect(message), 3)
+            self.assertEqual(events[-1]['response'], 'Approved')
+            self.assertFalse(any(event.get('approval_required') for event in events))
+            self.assertFalse(self.bridge.approvals)
+
     async def test_stop_closes_runtime_and_clears_state(self):
         stream = kimi_chat.stream_chat('wait', self.conv)
         await anext(stream)

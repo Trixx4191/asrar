@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import contextlib
 import difflib
 import json
@@ -10,16 +11,27 @@ from pathlib import Path
 
 import anyio
 
-from tools.shell import is_navigation_only
+from tools.shell import is_navigation_only, check_command
 from core import memory
 from core.claude_bridge import bridge, sdk_types, executable, sdk_environment, AUTH_HOME, ClaudeError
 from core.codex_chat import session_for, save_session
 from core.preferences import load_preferences
+from core.execution_policy import EFFICIENCY_INSTRUCTIONS
+from core.progress import ToolProgressGuard, STALLED_TOOL_RESPONSE
 from providers.configuration import redact_secrets
 
 READ_TOOLS = {"Read", "Glob", "Grep", "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "AskUserQuestion"}
 WRITE_TOOLS = {"Bash", "Edit", "Write", "NotebookEdit"}
 FILE_TOOLS = {"Read", "Glob", "Grep", "Edit", "Write", "NotebookEdit"}
+
+
+def needs_command_review(command):
+    """Keep destructive/system operations behind review, even in the sandbox."""
+    from core.hooks import _CONFIRM_COMMAND_PATTERNS
+    return check_command(command)["blocked"] or any(
+        pattern in command.lower() for pattern in
+        [*_CONFIRM_COMMAND_PATTERNS, "chmod ", "chown ", "git push", "git reset", "git clean"]
+    )
 
 
 def file_path(name, values, workspace):
@@ -52,6 +64,9 @@ async def _run_turn(message, conversation_id, session_id, resume, settings, mode
     if settings.web_search != "disabled":
         allowed |= {"WebSearch", "WebFetch"}
     calls, before = {}, {}
+    progress = ToolProgressGuard()
+    pending_batches = deque()
+    completed_results = {}
 
     async def emit(event):
         await queue.put(event)
@@ -84,8 +99,11 @@ async def _run_turn(message, conversation_id, session_id, resume, settings, mode
                 pass
         if name == "Bash" and is_navigation_only(values.get("command", "")):
             return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}
-        if name in WRITE_TOOLS | {"WebSearch", "WebFetch", "AskUserQuestion"}:
+        if name == "Bash" and needs_command_review(values.get("command", "")) or name == "AskUserQuestion":
             return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask", "permissionDecisionReason": "Review this action in Asrār"}}
+        if name != "Bash":
+            return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}
+        # Let Claude's sandbox decide whether shell execution needs escalation.
         return {}
 
     async def post_tool(data, tool_id, context):
@@ -104,6 +122,13 @@ async def _run_turn(message, conversation_id, session_id, resume, settings, mode
     async def permission(name, values, context):
         if name not in allowed:
             return sdk.PermissionResultDeny(message="Tool is unavailable in this access mode")
+        path = file_path(name, values, settings.workspace)
+        if path and (not path.is_relative_to(Path(settings.workspace)) or path.is_relative_to(AUTH_HOME.resolve())):
+            return sdk.PermissionResultDeny(message="Tool paths must remain inside the selected workspace and outside private sign-in storage")
+        if name == "Bash" and values.get("dangerouslyDisableSandbox"):
+            return sdk.PermissionResultDeny(message="Asrār does not permit Claude commands to disable the sandbox")
+        if name not in {"Bash", "AskUserQuestion"}:
+            return sdk.PermissionResultAllow(updated_input=values)
         ticket = uuid.uuid4().hex
         future = asyncio.get_running_loop().create_future()
         question = name == "AskUserQuestion"
@@ -141,10 +166,12 @@ async def _run_turn(message, conversation_id, session_id, resume, settings, mode
         session_id=None if resume else session_id,
         system_prompt={"type": "preset", "preset": "claude_code", "append":
                        "You are Asrār, powered by Claude Code. Respect the selected workspace and access mode. "
-                       "Explain changes clearly and verify your work.\n" + settings.instructions},
+                       "Read and search workspace files, make routine workspace edits, and run sandboxed commands without asking for confirmation. "
+                       "Ask before destructive actions or access beyond the selected permissions. Explain changes clearly and verify your work.\n"
+                       + EFFICIENCY_INSTRUCTIONS + settings.instructions},
         hooks={"PreToolUse": [sdk.HookMatcher(hooks=[pre_tool])], "PostToolUse": [sdk.HookMatcher(hooks=[post_tool])]},
         sandbox={"enabled": settings.access_mode == "workspace-write", "failIfUnavailable": True,
-                 "autoAllowBashIfSandboxed": False, "allowUnsandboxedCommands": False,
+                 "autoAllowBashIfSandboxed": True, "allowUnsandboxedCommands": False,
                  "filesystem": {"denyRead": [str(AUTH_HOME)], "denyWrite": [str(AUTH_HOME)]},
                  "network": {"allowedDomains": ["*"] if settings.network_access else [],
                              "deniedDomains": [] if settings.network_access else ["*"],
@@ -165,13 +192,18 @@ async def _run_turn(message, conversation_id, session_id, resume, settings, mode
                         streamed += text
                         await emit({"token": text})
                 elif isinstance(event, sdk.AssistantMessage):
+                    batch = []
                     for block in event.content:
                         if isinstance(block, sdk.TextBlock) and not streamed:
                             await emit({"token": block.text})
-                        elif isinstance(block, sdk.ToolUseBlock) and block.id not in calls:
-                            public_args = json.loads(redact_secrets(json.dumps(block.input, default=str)))
-                            calls[block.id] = {"name": block.name, "args": public_args, "result": None}
-                            await emit({"tool_start": block.name, "tool_call_id": block.id, "args": public_args})
+                        elif isinstance(block, sdk.ToolUseBlock):
+                            batch.append(block.id)
+                            if block.id not in calls:
+                                public_args = json.loads(redact_secrets(json.dumps(block.input, default=str)))
+                                calls[block.id] = {"name": block.name, "args": public_args, "result": None}
+                                await emit({"tool_start": block.name, "tool_call_id": block.id, "args": public_args})
+                    if batch:
+                        pending_batches.append(batch)
                     streamed = ""
                 elif isinstance(event, sdk.UserMessage) and isinstance(event.content, list):
                     for block in event.content:
@@ -182,6 +214,26 @@ async def _run_turn(message, conversation_id, session_id, resume, settings, mode
                             calls[block.tool_use_id] = call
                             await emit({"tool_result": call["name"], "tool_call_id": block.tool_use_id,
                                         "preview": output, "success": not block.is_error})
+                            completed_results[block.tool_use_id] = block.content
+                    stalled = False
+                    while pending_batches and all(identifier in completed_results for identifier in pending_batches[0]):
+                        batch = pending_batches.popleft()
+                        observed = [calls[identifier] for identifier in batch]
+                        results = [completed_results.pop(identifier) for identifier in batch]
+                        if all(call["name"] in {"Read", "Grep", "Glob"} for call in observed):
+                            stalled = progress.stalled(observed, results)
+                        else:
+                            progress.reset()
+                        if stalled:
+                            break
+                    if stalled:
+                        with contextlib.suppress(Exception):
+                            await asyncio.wait_for(client.interrupt(), 5)
+                        final_seen = True
+                        await emit({"claude_result": True, "response": STALLED_TOOL_RESPONSE,
+                                    "tool_calls": list(calls.values()), "incomplete": True,
+                                    "stop_reason": "repeated_tool_results"})
+                        break
                 elif isinstance(event, sdk.ResultMessage):
                     final_seen = True
                     failed = event.is_error or event.subtype != "success"
@@ -234,7 +286,7 @@ async def stream_chat(message, conversation_id, model=None, effort=None, context
                 paths.append(str(path.relative_to(settings.workspace)))
             message += "\n\nAttached workspace files (read these for context):\n" + "\n".join("- " + path for path in paths)
         chosen_model, chosen_effort = model or settings.claude_model, effort or settings.claude_effort
-        catalog = await bridge.models()
+        catalog = await bridge.models(account=account)
         if active["stopped"]:
             yield {"done": True, "response": "Task stopped.", "model_used": model_name, "task_type": "coding", "tool_calls": []}
             return
@@ -287,7 +339,8 @@ async def stream_chat(message, conversation_id, model=None, effort=None, context
                 memory.add_message(conversation_id, "assistant", text or "Task completed without a text reply.",
                                    model=model_name, task_type="coding", tool_calls=tools)
                 persisted = True
-                yield {"done": True, "response": text, "model_used": model_name, "task_type": "coding", "tool_calls": tools}
+                yield {"done": True, "response": text, "model_used": model_name, "task_type": "coding", "tool_calls": tools,
+                       **({"incomplete": True, "stop_reason": event["stop_reason"]} if event.get("incomplete") else {})}
             else:
                 if event.get("error"):
                     text += "\n\nTask failed: " + event["error"]

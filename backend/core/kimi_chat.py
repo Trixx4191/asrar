@@ -7,6 +7,7 @@ import uuid
 
 from core import memory
 from core.preferences import load_preferences
+from core.execution_policy import EFFICIENCY_INSTRUCTIONS
 from core.codex_chat import session_for, save_session
 from core.kimi_bridge import bridge, spawn, ACPClient, KimiError
 
@@ -60,6 +61,11 @@ async def stream_chat(message, conversation_id, model=None, context_files=None):
                 if settings.access_mode == "read-only" and call.get("kind") not in {"read", "search", "think"}:
                     await peer.send({"id": data["id"], "result": {"outcome": {"outcome": "cancelled"}}})
                     return
+                if call.get("kind") in {"read", "search", "think"}:
+                    option = next((item for item in options if item.get("kind") == "allow_once"), None)
+                    if option:
+                        await peer.send({"id": data["id"], "result": {"outcome": {"outcome": "selected", "optionId": option["optionId"]}}})
+                        return
                 ticket = uuid.uuid4().hex
                 bridge.approvals[ticket] = {"conversation_id": conversation_id, "client": peer,
                                             "id": data["id"], "options": options}
@@ -92,11 +98,11 @@ async def stream_chat(message, conversation_id, model=None, context_files=None):
         if chosen:
             await client.request("session/set_model", {"sessionId": active["session_id"], "modelId": chosen})
         instructions = ("You are Asrar, a local coding assistant. Work in the selected workspace. "
-                        "Ask for permission before changing files or running commands. "
+                        "Read and search files without asking for confirmation. Use native permission requests for changes and commands; do not ask for the same approval again in chat. "
                         f"Selected access: {settings.access_mode}. "
                         + ("Do not run commands or modify files. " if settings.access_mode == "read-only" else "")
                         + ("Do not use network tools. " if not settings.network_access else "")
-                        + settings.instructions)
+                        + EFFICIENCY_INSTRUCTIONS + settings.instructions)
         memory.add_message(conversation_id, "user", message)
         started = True
         active["prompting"] = True

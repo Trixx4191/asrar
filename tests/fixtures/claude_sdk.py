@@ -78,7 +78,7 @@ class Client:
             name='AskUserQuestion' if self.message.startswith('question') else 'Write' if self.message.startswith(('write','outside')) else 'Bash'
             values=({'questions':[{'question':'Which approach?','header':'Approach','options':[{'label':'Simple','description':'Keep it simple'}]}]} if name=='AskUserQuestion' else
                     {'file_path':str(Path(self.options.cwd)/('example.txt' if self.message.startswith('write') else '../outside.txt')),'content':'new content\n'} if name=='Write' else
-                    {'command':'echo harmless test', **({'dangerouslyDisableSandbox':True} if self.message.startswith('escape') else {})})
+                    {'command':'rm example.txt' if self.message.startswith('approval') else 'echo harmless test', **({'dangerouslyDisableSandbox':True} if self.message.startswith('escape') else {})})
             yield AssistantMessage([ToolUseBlock('tool-test',name,values)])
             data={'tool_name':name,'tool_input':values}
             hook_result={}
