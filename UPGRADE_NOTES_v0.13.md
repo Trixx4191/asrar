@@ -1,6 +1,6 @@
 # Asrār v0.13 — Skills, latency, and runtime reliability
 
-Validated on 2026-10-20. This is a tested runtime upgrade, not a claim of
+This is a tested runtime upgrade, not a claim of
 superiority over Claude, Codex, or Grok. Comparative quality requires a
 shared task set, grading, repeated trials, and cost/latency measurements.
 

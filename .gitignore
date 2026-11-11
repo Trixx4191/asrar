@@ -49,3 +49,14 @@ config/*.secret
 # Optional: ignore compiled Python cache in backend
 backend/__pycache__/
 
+# Personal planning and local workspaces
+/UPGRADE_PLAN.md
+/private/
+/personal/
+/review/
+/notes/private/
+/.agents/
+/.codex/
+/.claude/
+/.aws/
+/TODO.md
