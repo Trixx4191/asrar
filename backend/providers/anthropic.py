@@ -7,7 +7,7 @@ import json
 from typing import AsyncIterator
 
 import httpx
-from .transport import provider_error, request_timeout
+from .transport import provider_error, provider_client, token_count
 
 from .base import BaseProvider, Message, ProviderResponse, ProviderCapabilities
 
@@ -109,11 +109,12 @@ class AnthropicProvider(BaseProvider):
         if temperature is not None:
             body["temperature"] = temperature
 
+        headers = self.headers()
         try:
-            async with httpx.AsyncClient(timeout=request_timeout()) as client:
+            async with provider_client(self.name, self.base_url, headers) as client:
                 r = await client.post(
                     f"{self.base_url}/messages",
-                    headers=self.headers(),
+                    headers=headers,
                     json=body,
                 )
                 r.raise_for_status()
@@ -170,12 +171,15 @@ class AnthropicProvider(BaseProvider):
         text = ""
         tool_calls = []
         current_tool = None
+        usage = {}
+        finish_reason = None
+        headers = self.headers()
         try:
-            async with httpx.AsyncClient(timeout=request_timeout()) as client:
+            async with provider_client(self.name, self.base_url, headers) as client:
                 async with client.stream(
                     "POST",
                     f"{self.base_url}/messages",
-                    headers=self.headers(),
+                    headers=headers,
                     json=body,
                 ) as resp:
                     if resp.is_error:
@@ -189,7 +193,12 @@ class AnthropicProvider(BaseProvider):
                         except json.JSONDecodeError:
                             continue
                         etype = event.get("type", "")
-                        if etype == "content_block_start":
+                        if etype == "message_start":
+                            usage.update(event.get("message", {}).get("usage") or {})
+                        elif etype == "message_delta":
+                            usage.update(event.get("usage") or {})
+                            finish_reason = event.get("delta", {}).get("stop_reason") or finish_reason
+                        elif etype == "content_block_start":
                             block = event.get("content_block", {})
                             if block.get("type") == "tool_use":
                                 current_tool = {
@@ -231,6 +240,8 @@ class AnthropicProvider(BaseProvider):
                 "response": ProviderResponse(
                     content="", model_id=model_id, provider=self.name,
                     success=False, error=provider_error(e),
+                    input_tokens=token_count(usage.get("input_tokens")),
+                    output_tokens=token_count(usage.get("output_tokens")),
                 ),
             }
             return
@@ -242,5 +253,8 @@ class AnthropicProvider(BaseProvider):
                 model_id=model_id,
                 provider=self.name,
                 tool_calls=tool_calls,
+                input_tokens=token_count(usage.get("input_tokens")),
+                output_tokens=token_count(usage.get("output_tokens")),
+                finish_reason=finish_reason,
             ),
         }

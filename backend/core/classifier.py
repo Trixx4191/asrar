@@ -91,6 +91,46 @@ TASK_SIGNALS: dict[str, list[str]] = {
 
 LOW_CONFIDENCE_THRESHOLD = 0.55
 
+# Routing looks at the request, not every token of a pasted source file. Keep
+# both ends so a question following a large quote is still visible.
+MAX_CLASSIFICATION_CHARS = 6000
+_KEYWORD_PATTERNS = {
+    task: [(keyword, re.compile(r"(?<!\w)" + re.escape(keyword) + r"(?!\w)"))
+           for keyword in keywords]
+    for task, keywords in TASK_SIGNALS.items()
+}
+_POLITE_PREFIX = re.compile(
+    r"^(?:(?:please|can you|could you|would you|help me|i need you to|i want you to|now|then|also)\s+)+"
+)
+
+# Match the operation before counting incidental nouns in its subject. A
+# report about Python is document work; building a website is coding.
+_PRIMARY_INTENTS = [
+    (r"^(?:summari[sz]e|summary|tldr|condense|shorten)\b", "summarization"),
+    (r"^(?:diagnose|troubleshoot)\b|^fix my (?:pc|computer)\b", "pc_diagnosis"),
+    (r"^(?:search|find|look for)\b.*\b(?:codebase|repository|repo|source code)\b", "coding"),
+    (r"^(?:search|browse|look up|find online|research online|check online)\b", "web_research"),
+    (r"^(?:edit|fix|debug|refactor|review|update)\b.*\.(?:py|js|jsx|ts|tsx|rs|go|java|cpp|c|h|rb|php|swift)\b", "coding"),
+    (r"^(?:write|draft|edit|create|rewrite|format|proofread)\b.*\b(?:essay|report|letter|email|pdf|docx|document|article|blog|paragraph)\b", "document_work"),
+    (r"^(?:fix|debug|repair|refactor|review|optimi[sz]e|implement)\b.*\b(?:tests?|ci|code|bug|function|script|app|application|ui|frontend|backend|architecture|api|website|page|component)\b", "coding"),
+    (r"^(?:build|develop|implement|scaffold|refactor|compile)\b", "coding"),
+    (r"^(?:write|create|edit|add|update)\b.*\b(?:python|javascript|typescript|rust|golang|function|class|code|script|app|application|website|webpage|component|api)\b", "coding"),
+    (r"^(?:why|how)\b.*\b(?:code|function|app|application|test|script|api)\b.*\b(?:crash(?:es|ing)?|fail(?:s|ing)?|broken|error|slow|not working)\b", "coding"),
+    (r"^make\b.*\b(?:app|application|website|code|ui)\b.*\b(?:fast(?:er)?|responsive|work)\b", "coding"),
+    (r"^(?:run|execute|install|uninstall|automate|schedule|rename|move|delete)\b", "shell_automation"),
+    (r"^(?:analy[sz]e|plot|compare)\b.*\b(?:csv|dataset|data|statistics|metrics|spreadsheet|chart)\b", "analysis"),
+    (r"^(?:describe|analy[sz]e|inspect)\b.*\b(?:image|picture|photo|screenshot|video)\b", "multimodal"),
+    (r"^(?:prove|derive|deduce|think through)\b", "deep_reasoning"),
+    (r"^(?:create|open|update|merge)\b.*\b(?:pull request|github issue)\b", "document_work"),
+    (r"^(?:hi|hello|hey|thanks|thank you)[!.\s]*$", "fast_chat"),
+]
+_PRIMARY_INTENTS = [(re.compile(pattern), task) for pattern, task in _PRIMARY_INTENTS]
+_REFERENTIAL_FOLLOWUP = re.compile(
+    r"^(?:what about|how about|and(?: then)?|also|now|try|instead|again|same|"
+    r"(?:write|build|implement|do|run|edit|fix|change|make|update|use) (?:it|that|this|them|those|these)|"
+    r"the (?:first|second|other|last)|it|that|this|those|these)\b"
+)
+
 _CONTINUATION_RE = re.compile(
     r"(?:(?:yes|yeah|yep|ok|okay|sure|alright)(?: please)?|sounds good|"
     r"(?:(?:yes|yeah|yep|ok|okay|sure|alright) )?(?:please )?"
@@ -122,30 +162,50 @@ class ClassifiedTask:
     suggested_models: list[str] = field(default_factory=list)
     source: str = "keyword"  # "keyword" | "model" | "hybrid"
     reason: str = ""
+    explicit_intent: bool = False
+
+
+def _classification_text(user_input: str) -> str:
+    text = user_input.lower().strip()
+    if len(text) > MAX_CLASSIFICATION_CHARS:
+        return text[:4000] + "\n" + text[-1999:]
+    return text
+
+
+def _message_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(block.get("text", "") for block in content
+                        if isinstance(block, dict) and isinstance(block.get("text"), str))
+    return ""
+
+
+def is_referential_followup(user_input: str) -> bool:
+    """Whether the request refers back to the active work rather than naming a new task."""
+    normalized = re.sub(r"[\s,!.]+", " ", user_input.lower()).strip()
+    normalized = _POLITE_PREFIX.sub("", normalized)
+    return bool(_CONTINUATION_RE.fullmatch(normalized) or _REFERENTIAL_FOLLOWUP.search(normalized))
 
 
 def _keyword_classify(user_input: str) -> ClassifiedTask:
-    text = user_input.lower().strip()
+    text = _classification_text(user_input)
     scores: dict[str, int] = {}
     matched_keywords: dict[str, list[str]] = {}
 
-    for task_type, keywords in TASK_SIGNALS.items():
-        hits = [kw for kw in keywords if re.search(r"(?<!\w)" + re.escape(kw) + r"(?!\w)", text)]
+    for task_type, patterns in _KEYWORD_PATTERNS.items():
+        hits = [keyword for keyword, pattern in patterns if pattern.search(text)]
         scores[task_type] = len(hits)
         matched_keywords[task_type] = hits
 
-    # Lead verbs express the requested operation more reliably than incidental
-    # nouns ("summarize this report" is summarization, not document editing).
-    primary = re.sub(r"^(?:(?:please|can you|could you|help me)\s+)+", "", text)
-    intents = (
-        (r"^(?:summari[sz]e|summary|tldr|condense|shorten)\b", "summarization"),
-        (r"^(?:diagnose|troubleshoot)\b|^fix my (?:pc|computer)\b", "pc_diagnosis"),
-        (r"^(?:fix|debug|repair)\b.*\b(?:tests?|ci|code|bug|function|script)\b", "coding"),
-    )
-    for pattern, task_type in intents:
-        if re.search(pattern, primary):
-            scores[task_type] += 4
-            break
+    primary = _POLITE_PREFIX.sub("", text)
+    for pattern, task_type in _PRIMARY_INTENTS:
+        if pattern.search(primary):
+            return ClassifiedTask(
+                raw_input=user_input, task_type=task_type, confidence=0.9,
+                keywords_matched=matched_keywords[task_type], source="keyword",
+                reason="Explicit request operation", explicit_intent=True,
+            )
 
     best_type = max(scores, key=lambda t: scores[t])
     best_score = scores[best_type]
@@ -182,11 +242,7 @@ def _build_context_snippet(history: list[dict] | None, max_turns: int = 4) -> st
     lines = []
     for m in recent:
         role = m.get("role", "?")
-        content = (m.get("content") or "")[:300]
-        if isinstance(content, list):
-            content = " ".join(
-                b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
-            )[:300]
+        content = _message_text(m.get("content"))[:300]
         lines.append(f"{role}: {content}")
     return "\n".join(lines)
 
@@ -200,6 +256,7 @@ async def _model_classify(
         from providers import get_provider
         from core.router import load_registry, get_available_models
         from providers.base import Message
+        from core import orchestrator
 
         registry = load_registry()
         available = get_available_models(registry)
@@ -207,7 +264,10 @@ async def _model_classify(
         candidates = ["groq-fast", "llama-70b", "mistral-small", "gemini-flash", "claude-haiku"]
         model_key = None
         for c in candidates:
-            if c in available:
+            if (c in available
+                    and registry["models"][c].get("validation", {}).get("status")
+                    not in {"failed", "timeout", "tool_calling_unverified"}
+                    and orchestrator.is_available(registry["models"][c]["provider"])):
                 model_key = c
                 break
         if not model_key:
@@ -219,7 +279,7 @@ async def _model_classify(
             return None
 
         context = _build_context_snippet(history)
-        user_payload = f"User message:\n{user_input}"
+        user_payload = f"User message:\n{_classification_text(user_input)}"
         if context:
             user_payload = f"Recent conversation:\n{context}\n\n{user_payload}"
 
@@ -281,19 +341,24 @@ async def classify_task_async(
 
     normalized = re.sub(r"[\s,!.]+", " ", user_input.lower()).strip()
     is_continuation = bool(_CONTINUATION_RE.fullmatch(normalized))
-    if history and len(user_input.split()) <= 8 and (kw.task_type == "general" or is_continuation):
-        for message in reversed(history):
+    is_referential = bool(_REFERENTIAL_FOLLOWUP.search(normalized))
+    if history and not kw.explicit_intent and len(user_input.split()) <= 16 and (is_continuation or is_referential):
+        # Only the latest substantive user request owns a continuation. Do not
+        # reach back past a new, unclassified topic to an unrelated older task.
+        for message in reversed(history[-16:]):
             if message.get("role") != "user":
                 continue
-            previous_input = str(message.get("content") or "")
+            previous_input = _message_text(message.get("content"))
             previous_normalized = re.sub(r"[\s,!.]+", " ", previous_input.lower()).strip()
             if _CONTINUATION_RE.fullmatch(previous_normalized):
                 continue
             previous = _keyword_classify(previous_input)
             if previous.task_type != "general":
                 previous.raw_input = user_input
+                previous.explicit_intent = False
                 previous.reason = "Short follow-up: retained recent user task type"
                 return previous
+            break
 
     # Routing must not add an LLM round trip to every user message. Hybrid
     # classification is opt-in and bounded independently of provider timeouts.

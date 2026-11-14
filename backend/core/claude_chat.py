@@ -286,7 +286,9 @@ async def stream_chat(message, conversation_id, model=None, effort=None, context
                 paths.append(str(path.relative_to(settings.workspace)))
             message += "\n\nAttached workspace files (read these for context):\n" + "\n".join("- " + path for path in paths)
         chosen_model, chosen_effort = model or settings.claude_model, effort or settings.claude_effort
-        catalog = await bridge.models(account=account)
+        # The account default needs no model lookup. A cold catalog creates a
+        # separate SDK process, which is wasted when no override is requested.
+        catalog = await bridge.models(account=account) if chosen_model or chosen_effort else []
         if active["stopped"]:
             yield {"done": True, "response": "Task stopped.", "model_used": model_name, "task_type": "coding", "tool_calls": []}
             return

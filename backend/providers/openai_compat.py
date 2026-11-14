@@ -7,7 +7,7 @@ import json
 from typing import AsyncIterator, Any
 
 import httpx
-from .transport import provider_error, request_timeout
+from .transport import provider_error, provider_client, token_count
 from .configuration import redact_secrets
 
 from .base import Message, ProviderResponse
@@ -52,7 +52,7 @@ async def openai_complete(
         body["temperature"] = temperature
 
     try:
-        async with httpx.AsyncClient(timeout=request_timeout(timeout)) as client:
+        async with provider_client(provider_name, base_url, headers, timeout) as client:
             r = await client.post(f"{base_url}/chat/completions", headers=headers, json=body)
             r.raise_for_status()
             data = r.json()
@@ -128,8 +128,9 @@ async def openai_stream(
     finish_reason = None
     completed = False
     stream_error = None
+    input_tokens = output_tokens = 0
     try:
-        async with httpx.AsyncClient(timeout=request_timeout(timeout)) as client:
+        async with provider_client(provider_name, base_url, headers, timeout) as client:
             async with client.stream(
                 "POST", f"{base_url}/chat/completions", headers=headers, json=body
             ) as resp:
@@ -152,6 +153,12 @@ async def openai_stream(
                         message = error.get("message", "Stream failed") if isinstance(error, dict) else "Stream failed"
                         stream_error = "Provider error: " + redact_secrets(str(message))[:400]
                         break
+                    usage = chunk.get("usage") or (chunk.get("x_groq") or {}).get("usage") or {}
+                    if isinstance(usage, dict):
+                        if "prompt_tokens" in usage:
+                            input_tokens = token_count(usage["prompt_tokens"])
+                        if "completion_tokens" in usage:
+                            output_tokens = token_count(usage["completion_tokens"])
                     choices = chunk.get("choices") or []
                     if not choices:
                         continue  # Usage-only streaming frames contain no choices.
@@ -182,7 +189,8 @@ async def openai_stream(
         yield {
             "type": "done",
             "response": ProviderResponse(
-                content="", model_id=model_id, provider=provider_name, success=False, error=provider_error(e)
+                content="", model_id=model_id, provider=provider_name, success=False, error=provider_error(e),
+                input_tokens=input_tokens, output_tokens=output_tokens,
             ),
         }
         return
@@ -214,6 +222,8 @@ async def openai_stream(
             provider=provider_name,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             success=stream_error is None,
             error=stream_error,
         ),

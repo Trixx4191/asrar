@@ -52,7 +52,20 @@ async def stream_chat(message, conversation_id, model=None, effort=None, context
             message += "\n\nAttached workspace files (read these for context):\n" + "\n".join("- " + name for name in files)
         chosen_model = model or settings.codex_model
         chosen_effort = effort or settings.reasoning_effort
-        catalog = await bridge.models()
+        marker = AUTH_HOME / "asrar-session-id"
+        if not marker.exists():
+            import uuid
+            marker.write_text(uuid.uuid4().hex)
+            marker.chmod(0o600)
+        scope = hashlib.sha256(((account.get("email") or "") + marker.read_text()).encode()).hexdigest()
+        existing = session_for(conversation_id)
+        if existing and existing["runtime"] != "codex":
+            raise CodexError("This chat uses another connection. Start a new chat to use Codex.")
+        if existing and (existing["workspace"] != settings.workspace or existing["account_scope"] != scope):
+            raise CodexError("This chat belongs to another workspace or account session. Start a new chat to continue.")
+        if not existing and memory.get_messages_full(conversation_id):
+            raise CodexError("This chat uses an API connection. Start a new chat to use your ChatGPT subscription.")
+        catalog = await bridge.models(cache_scope=scope)
         if chosen_model:
             selected = next((m for m in catalog if m.get("model", m.get("id")) == chosen_model), None)
             if not selected:
@@ -66,20 +79,6 @@ async def stream_chat(message, conversation_id, model=None, effort=None, context
         supported = [entry["reasoningEffort"] for entry in selected.get("supportedReasoningEfforts", [])]
         if chosen_effort and chosen_effort not in supported:
             raise CodexError("This model does not support the chosen reasoning effort. Select its default effort.")
-        marker = AUTH_HOME / "asrar-session-id"
-        if not marker.exists():
-            import uuid
-            marker.write_text(uuid.uuid4().hex)
-            marker.chmod(0o600)
-        scope = hashlib.sha256(((account.get("email") or "") + marker.read_text()).encode()).hexdigest()
-        existing = session_for(conversation_id)
-        history = memory.get_messages_full(conversation_id)
-        if existing and existing["runtime"] != "codex":
-            raise CodexError("This chat uses another connection. Start a new chat to use Codex.")
-        if existing and (existing["workspace"] != settings.workspace or existing["account_scope"] != scope):
-            raise CodexError("This chat belongs to another workspace or account session. Start a new chat to continue.")
-        if not existing and history:
-            raise CodexError("This chat uses an API connection. Start a new chat to use your ChatGPT subscription.")
         sandbox = "read-only" if settings.access_mode == "read-only" else "workspace-write"
         thread_params = {"cwd": settings.workspace, "model": chosen_model,
                          "approvalPolicy": "on-request", "sandbox": sandbox,
@@ -92,12 +91,14 @@ async def stream_chat(message, conversation_id, model=None, effort=None, context
                          "Obtain approval for destructive actions and access beyond the sandbox.\n"
                          + EFFICIENCY_INSTRUCTIONS + settings.instructions}
         if existing:
-            await bridge.request("thread/resume", {**thread_params, "threadId": existing["thread_id"], "excludeTurns": True})
             thread_id = existing["thread_id"]
+            if not bridge.thread_loaded(thread_id, thread_params):
+                await bridge.request("thread/resume", {**thread_params, "threadId": thread_id, "excludeTurns": True})
         else:
             result = await bridge.request("thread/start", thread_params)
             thread_id = result["thread"]["id"]
             save_session(conversation_id, thread_id, settings.workspace, scope)
+        bridge.remember_thread(thread_id, thread_params)
         active["thread_id"] = thread_id
         queue = asyncio.Queue(maxsize=256)
         bridge.listeners[thread_id] = queue

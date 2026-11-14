@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Literal
 import json
+from contextlib import aclosing
 import traceback
 from pathlib import Path
 import sys
@@ -56,6 +57,7 @@ class ChatResponse(BaseModel):
     tool_calls: list[dict]
     conversation_id: str
     incomplete: bool = False
+    usage: dict | None = None
 
 
 @router.post("", response_model=ChatResponse)
@@ -159,26 +161,30 @@ async def chat_stream(req: ChatRequest, x_asrar_client: str | None = Header(defa
 
         if req.runtime == "muse":
             from core.muse_chat import stream_chat as muse_stream
-            async for event in muse_stream(req.message, conversation_id, req.muse_model, req.muse_effort, req.context_files):
-                yield f"data: {json.dumps(event)}\n\n"
+            async with aclosing(muse_stream(req.message, conversation_id, req.muse_model, req.muse_effort, req.context_files)) as runtime_events:
+                async for event in runtime_events:
+                    yield f"data: {json.dumps(event)}\n\n"
             return
 
         if req.runtime == "kimi":
             from core.kimi_chat import stream_chat as kimi_stream
-            async for event in kimi_stream(req.message, conversation_id, req.kimi_model, req.context_files):
-                yield f"data: {json.dumps(event)}\n\n"
+            async with aclosing(kimi_stream(req.message, conversation_id, req.kimi_model, req.context_files)) as runtime_events:
+                async for event in runtime_events:
+                    yield f"data: {json.dumps(event)}\n\n"
             return
 
         if req.runtime == "claude":
             from core.claude_chat import stream_chat as claude_stream
-            async for event in claude_stream(req.message, conversation_id, req.claude_model, req.claude_effort, req.context_files):
-                yield f"data: {json.dumps(event)}\n\n"
+            async with aclosing(claude_stream(req.message, conversation_id, req.claude_model, req.claude_effort, req.context_files)) as runtime_events:
+                async for event in runtime_events:
+                    yield f"data: {json.dumps(event)}\n\n"
             return
 
         if req.runtime == "codex":
             from core.codex_chat import stream_chat
-            async for event in stream_chat(req.message, conversation_id, req.codex_model, req.reasoning_effort, req.context_files):
-                yield f"data: {json.dumps(event)}\n\n"
+            async with aclosing(stream_chat(req.message, conversation_id, req.codex_model, req.reasoning_effort, req.context_files)) as runtime_events:
+                async for event in runtime_events:
+                    yield f"data: {json.dumps(event)}\n\n"
             return
 
         history = memory.get_messages(conversation_id)
@@ -190,37 +196,38 @@ async def chat_stream(req: ChatRequest, x_asrar_client: str | None = Header(defa
         task_type = None
 
         try:
-            async for event in run_task_stream(
+            async with aclosing(run_task_stream(
                 user_input=req.message,
                 history=history,
                 force_model=req.force_model,
                 conversation_id=conversation_id,
-            ):
-                if "error" in event and len(event) == 1:
+            )) as task_events:
+                async for event in task_events:
+                    if "error" in event:
+                        yield f"data: {json.dumps(event)}\n\n"
+                        return
+
+                    if event.get("token"):
+                        final_text += event["token"]
+
+                    if event.get("done"):
+                        final_tool_calls = event.get("tool_calls") or []
+                        if event.get("response") is not None:
+                            final_text = event["response"] or final_text
+                        model_used = event.get("model_used") or model_used
+                        task_type = event.get("task_type") or task_type
+                        # Commit before announcing completion so the client can
+                        # immediately refresh the conversation without a race.
+                        memory.add_message(
+                            conversation_id, "assistant", final_text,
+                            model=model_used, task_type=task_type, tool_calls=final_tool_calls,
+                        )
+
+                    if event.get("meta"):
+                        model_used = event.get("model") or model_used
+                        task_type = event.get("task_type") or task_type
+
                     yield f"data: {json.dumps(event)}\n\n"
-                    return
-
-                if event.get("token"):
-                    final_text += event["token"]
-
-                if event.get("done"):
-                    final_tool_calls = event.get("tool_calls") or []
-                    if event.get("response") is not None:
-                        final_text = event["response"] or final_text
-                    model_used = event.get("model_used") or model_used
-                    task_type = event.get("task_type") or task_type
-                    # Commit before announcing completion so the client can
-                    # immediately refresh the conversation without a race.
-                    memory.add_message(
-                        conversation_id, "assistant", final_text,
-                        model=model_used, task_type=task_type, tool_calls=final_tool_calls,
-                    )
-
-                if event.get("meta"):
-                    model_used = event.get("model") or model_used
-                    task_type = event.get("task_type") or task_type
-
-                yield f"data: {json.dumps(event)}\n\n"
 
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e), 'trace': traceback.format_exc()[:500]})}\n\n"

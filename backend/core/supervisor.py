@@ -32,8 +32,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core import memory
-from core.router import route, route_async, load_registry, RoutingDecision
+from core import memory, orchestrator
+from core.classifier import ClassifiedTask, classify_task, is_referential_followup
+from core.router import route, route_async, load_registry, get_available_models, _build_decision, RoutingDecision
 from providers import get_provider
 
 
@@ -54,55 +55,62 @@ def _is_clarifying_question(text: str, tool_calls: list | None) -> bool:
     return True
 
 
-def decide_route(conversation_id: str, user_input: str, force_model: str | None = None) -> RoutingDecision:
-    """Routing decision, aware of any open clarifying question in this conversation.
+def _pending_route(conversation_id: str, user_input: str, state: dict | None) -> RoutingDecision | None:
+    """Retain clarification answers, but let an explicit new request move on."""
+    if not state or not state.get("awaiting_clarification"):
+        return None
+    if classify_task(user_input).explicit_intent and not is_referential_followup(user_input):
+        memory.clear_awaiting(conversation_id)
+        memory.log_event(conversation_id, "clarification_superseded", {"reason": "explicit user request"})
+        return None
 
-    - Explicit force_model always wins (the user picked a model on purpose).
-    - If the conversation is mid-clarification, stay with the model that
-      asked, as long as it's still available.
-    - Otherwise, route normally (fresh classification).
-    """
+    registry = load_registry()
+    pending_key = state.get("pending_model_key")
+    pending_model = registry["models"].get(pending_key)
+    available = False
+    if (pending_model and pending_model.get("enabled", True)
+            and pending_model.get("validation", {}).get("status")
+            not in {"failed", "timeout", "tool_calling_unverified"}
+            and orchestrator.is_available(pending_model["provider"])):
+        try:
+            available = get_provider(pending_model["provider"], model=pending_model).is_available()
+        except Exception:
+            pass
+    if not available:
+        memory.clear_awaiting(conversation_id)
+        memory.log_event(conversation_id, "sticky_route_unavailable", {"reason": "pending model unavailable"})
+        return None
+
+    task_type = state.get("task_type") or "general"
+    # A clarification keeps its model first without disabling normal failover.
+    # This is local routing only: never call an LLM just to build this chain.
+    try:
+        fallback = _build_decision(
+            ClassifiedTask(user_input, task_type, 0.9, source="context"),
+            registry, get_available_models(registry),
+        )
+        chain = [fallback.selected_model_key, *fallback.fallback_chain]
+    except RuntimeError:
+        chain = []
+    decision = RoutingDecision(
+        task_type=task_type, selected_model_key=pending_key, selected_model=pending_model,
+        fallback_chain=[key for key in chain if key != pending_key], sticky=True,
+        classification_source="context", confidence=0.9,
+        reason=f"Continuing clarification with {pending_model.get('display_name', pending_key)}",
+    )
+    memory.log_event(conversation_id, "sticky_route", {"model": pending_key, "reason": decision.reason})
+    return decision
+
+
+def decide_route(conversation_id: str, user_input: str, force_model: str | None = None) -> RoutingDecision:
+    """Manual selection wins; short clarification answers retain their model."""
     if force_model:
         decision = route(user_input, force_model=force_model)
         memory.log_event(conversation_id, "manual_override", {"model": force_model})
         return decision
-
-    state = memory.get_state(conversation_id)
-
-    if state and state.get("awaiting_clarification"):
-        pending_key = state.get("pending_model_key")
-        registry = load_registry()
-        pending_model = registry["models"].get(pending_key)
-
-        if pending_model and pending_model.get("enabled", True):
-            try:
-                pending_available = get_provider(pending_model["provider"], model=pending_model).is_available()
-            except Exception:
-                pending_available = False
-
-            if pending_available:
-                memory.log_event(
-                    conversation_id, "sticky_route",
-                    {"reason": "open clarifying question, continuing same model"},
-                    model=pending_model["display_name"],
-                )
-                return RoutingDecision(
-                    task_type=state.get("task_type") or "general",
-                    selected_model_key=pending_key,
-                    selected_model=pending_model,
-                    fallback_chain=[],
-                    sticky=True,
-                    reason=(
-                        f"Staying with '{pending_model['display_name']}' — it asked a "
-                        f"clarifying question last turn that hasn't been answered yet."
-                    ),
-                )
-
-        memory.log_event(
-            conversation_id, "sticky_route_unavailable",
-            {"reason": "pending model no longer available, falling back to fresh routing"},
-        )
-
+    pending = _pending_route(conversation_id, user_input, memory.get_state(conversation_id))
+    if pending is not None:
+        return pending
     decision = route(user_input, force_model=None)
     memory.log_event(
         conversation_id, "fresh_route",
@@ -158,32 +166,9 @@ async def decide_route_async(
         memory.log_event(conversation_id, "manual_override", {"model": force_model})
         return decision
 
-    state = memory.get_state(conversation_id)
-
-    if state and state.get("awaiting_clarification"):
-        pending_key = state.get("pending_model_key")
-        registry = load_registry()
-        pending_model = registry["models"].get(pending_key)
-        if pending_model and pending_model.get("enabled", True):
-            try:
-                pending_available = get_provider(pending_model["provider"], model=pending_model).is_available()
-            except Exception:
-                pending_available = False
-            if pending_available:
-                decision = RoutingDecision(
-                    task_type=state.get("task_type") or "general",
-                    selected_model_key=pending_key,
-                    selected_model=pending_model,
-                    fallback_chain=[],
-                    reason=f"Sticky: continuing clarification with {pending_model.get('display_name')}",
-                    sticky=True,
-                )
-                memory.log_event(
-                    conversation_id,
-                    "sticky_route",
-                    {"model": pending_key, "reason": decision.reason},
-                )
-                return decision
+    pending = _pending_route(conversation_id, user_input, memory.get_state(conversation_id))
+    if pending is not None:
+        return pending
 
     decision = await route_async(user_input, force_model=None, history=history)
     memory.log_event(

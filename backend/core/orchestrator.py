@@ -204,6 +204,7 @@ async def stream_with_retry(stream_fn, *, max_retries: int = 1, first_event_time
 # ─────────────────────────────────────────────────────────────
 
 READ_ONLY_TOOLS = {
+    "discover_tools",
     "read_file", "list_dir", "web_search", "fetch_page",
     "diagnose_system", "search_code", "find_files",
     "git_status", "git_diff", "git_log",

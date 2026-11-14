@@ -88,6 +88,12 @@ const Message = memo(function Message({ msg, showActivity = true }) {
         {msg.timings.time_to_first_token_ms != null && ` · First token ${(msg.timings.time_to_first_token_ms / 1000).toFixed(2)} s`}
       </div>}
 
+      {showActivity && Number.isFinite(msg.usage?.model_requests) && <div className="routing-reason" title={msg.usage.estimate_method}>
+        {msg.usage.model_requests} model request{msg.usage.model_requests === 1 ? "" : "s"}
+        {` · Est. input ${Number(msg.usage.estimated_input_tokens || 0).toLocaleString()} tokens`}
+        {msg.usage.context_chars_saved > 0 && ` · ${Number(msg.usage.context_chars_saved).toLocaleString()} context characters avoided`}
+      </div>}
+
       {/* Tool call blocks — shown above the text */}
       {showActivity && msg.toolCalls?.length > 0 && (
         <div className="tool-calls-list">
@@ -457,6 +463,9 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
           try { chunk = JSON.parse(line.slice(5).trim()); }
           catch { continue; }
 
+          // Usage may accompany terminal or token events as well as arrive alone.
+          if (chunk.usage) updateAssistant(m => ({ ...m, usage: chunk.usage }));
+
           if (chunk.conversation_id) {
             // Backend created or confirmed the conversation this turn belongs to.
             conversationIdRef.current = chunk.conversation_id;
@@ -482,9 +491,6 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
 
           } else if (chunk.notice) {
             updateAssistant(m => ({ ...m, notice: chunk.notice }));
-
-          } else if (chunk.usage) {
-            updateAssistant(m => ({ ...m, usage: chunk.usage }));
 
           } else if (chunk.codex_diff !== undefined) {
             updateAssistant(m => ({ ...m, diffs: [{ path: "Workspace changes", diff: chunk.codex_diff }] }));
@@ -569,6 +575,7 @@ export default function Chat({ forceModel, models = [], onForceModelChange, onMo
               nudging: false,
               content: chunk.response ?? m.content,
               timings: chunk.timings || m.timings,
+              usage: chunk.usage || m.usage,
               model: chunk.model_used
                 ? { display_name: chunk.model_used, provider: m.model?.provider || "auto" }
                 : m.model,

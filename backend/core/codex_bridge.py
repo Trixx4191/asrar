@@ -7,9 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
+import hashlib
 import json
 import os
 import shutil
+import time
 import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -56,11 +59,17 @@ class CodexBridge:
         self.active = {}  # conversation id -> thread/turn, owned by one stream
         self.last_error = None
         self._cleanup_tasks = set()
+        self._catalog_lock = asyncio.Lock()
+        self._catalog = None
+        self._catalog_scope = None
+        self._catalog_time = 0.0
+        self._loaded_threads = {}
 
     async def start(self):
         async with self._start_lock:
             if self.process and self.process.returncode is None:
                 return
+            self._reset_runtime_cache()
             binary = executable()
             if not binary:
                 raise CodexError("Codex is not installed. Run npm install in the frontend folder, then reconnect.")
@@ -135,6 +144,7 @@ class CodexBridge:
                 self.deliver(queue, {"method": "asrar/disconnected", "params": {}})
             self.approvals.clear()
             self.login = None
+            self._reset_runtime_cache()
 
     async def _dispatch(self, message):
         method = message.get("method")
@@ -151,10 +161,14 @@ class CodexBridge:
             self.login = None
             self.login_error = None if params.get("success") else "Sign-in did not complete. Try connecting again."
             if params.get("success"):
+                self._reset_runtime_cache()
                 marker = AUTH_HOME / "asrar-session-id"
                 marker.write_text(uuid.uuid4().hex)
                 marker.chmod(0o600)
         thread_id = params.get("threadId")
+        if (method in {"thread/closed", "thread/archived", "thread/deleted"}
+                or method == "thread/status/changed" and params.get("status", {}).get("type") == "notLoaded"):
+            self._loaded_threads.pop(thread_id, None)
         queue = self.listeners.get(thread_id)
         if "id" in message:
             # Never accept a server request automatically. Only these two
@@ -249,17 +263,50 @@ class CodexBridge:
                 raise CodexError("Stop running tasks before signing out")
             await self._cancel_login()
             await self.request("account/logout")
+            self._reset_runtime_cache()
             self.login_error = None
 
-    async def models(self):
-        models, cursor = [], None
-        for _ in range(20):
-            result = await self.request("model/list", {"limit": 100, "cursor": cursor, "includeHidden": False})
-            models.extend(row for row in result.get("data", []) if not row.get("hidden"))
-            cursor = result.get("nextCursor")
-            if not cursor:
-                break
-        return models
+    def _reset_runtime_cache(self):
+        self._catalog = None
+        self._catalog_scope = None
+        self._catalog_time = 0.0
+        self._loaded_threads.clear()
+
+    @staticmethod
+    def _thread_signature(params):
+        return hashlib.sha256(json.dumps(params, sort_keys=True).encode()).hexdigest()
+
+    def thread_loaded(self, thread_id, params):
+        """Reuse only a live thread with identical instructions and permissions."""
+        return (self.process is not None and self.process.returncode is None
+                and self._loaded_threads.get(thread_id) == self._thread_signature(params))
+
+    def remember_thread(self, thread_id, params):
+        self._loaded_threads.pop(thread_id, None)
+        self._loaded_threads[thread_id] = self._thread_signature(params)
+        # Evict bookkeeping only. An older thread can safely be resumed again.
+        if len(self._loaded_threads) > 128:
+            self._loaded_threads.pop(next(iter(self._loaded_threads)))
+
+    async def models(self, *, cache_scope=None):
+        """Cache task discovery briefly; explicit UI refresh remains a fresh RPC."""
+        async with self._catalog_lock:
+            if (cache_scope is not None and self._catalog is not None
+                    and self._catalog_scope == cache_scope
+                    and self.process is not None and self.process.returncode is None
+                    and time.monotonic() - self._catalog_time < 60):
+                return copy.deepcopy(self._catalog)
+            models, cursor = [], None
+            for _ in range(20):
+                result = await self.request("model/list", {"limit": 100, "cursor": cursor, "includeHidden": False})
+                models.extend(row for row in result.get("data", []) if not row.get("hidden"))
+                cursor = result.get("nextCursor")
+                if not cursor:
+                    break
+            self._catalog = copy.deepcopy(models)
+            self._catalog_scope = cache_scope
+            self._catalog_time = time.monotonic()
+            return models
 
     async def decide(self, conversation_id, ticket, approved):
         approval = self._scoped_request(conversation_id, ticket)
@@ -308,6 +355,7 @@ class CodexBridge:
         return task
 
     async def close(self):
+        self._reset_runtime_cache()
         for task in list(self._cleanup_tasks):
             task.cancel()
         if self._cleanup_tasks:

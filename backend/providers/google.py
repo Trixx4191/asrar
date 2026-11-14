@@ -7,7 +7,7 @@ import json
 from typing import AsyncIterator
 
 import httpx
-from .transport import provider_error, request_timeout
+from .transport import provider_error, provider_client, token_count
 
 from .base import BaseProvider, Message, ProviderResponse, ProviderCapabilities
 
@@ -103,9 +103,10 @@ class GoogleProvider(BaseProvider):
             body["generationConfig"]["temperature"] = temperature
 
         url = f"{self.base_url}/models/{model_id}:generateContent"
+        headers = {"x-goog-api-key": self.api_key}
         try:
-            async with httpx.AsyncClient(timeout=request_timeout()) as client:
-                r = await client.post(url, json=body, headers={"x-goog-api-key": self.api_key})
+            async with provider_client(self.name, self.base_url, headers) as client:
+                r = await client.post(url, json=body, headers=headers)
                 r.raise_for_status()
                 data = r.json()
             text = ""
@@ -122,8 +123,12 @@ class GoogleProvider(BaseProvider):
                             "args": fc.get("args") or {},
                             "thought_signature": part.get("thoughtSignature"),
                         })
+            usage = data.get("usageMetadata") or {}
             return ProviderResponse(
-                content=text, model_id=model_id, provider=self.name, tool_calls=tool_calls
+                content=text, model_id=model_id, provider=self.name, tool_calls=tool_calls,
+                input_tokens=token_count(usage.get("promptTokenCount")) + token_count(usage.get("toolUsePromptTokenCount")),
+                output_tokens=token_count(usage.get("candidatesTokenCount")) + token_count(usage.get("thoughtsTokenCount")),
+                finish_reason=next((c.get("finishReason") for c in data.get("candidates", []) if c.get("finishReason")), None),
             )
         except Exception as e:
             return ProviderResponse(
@@ -157,9 +162,12 @@ class GoogleProvider(BaseProvider):
         )
         text = ""
         tool_calls = []
+        usage = {}
+        finish_reason = None
+        headers = {"x-goog-api-key": self.api_key}
         try:
-            async with httpx.AsyncClient(timeout=request_timeout()) as client:
-                async with client.stream("POST", url, json=body, headers={"x-goog-api-key": self.api_key}) as resp:
+            async with provider_client(self.name, self.base_url, headers) as client:
+                async with client.stream("POST", url, json=body, headers=headers) as resp:
                     if resp.is_error:
                         await resp.aread()
                     resp.raise_for_status()
@@ -170,7 +178,9 @@ class GoogleProvider(BaseProvider):
                             chunk = json.loads(line[5:].strip())
                         except json.JSONDecodeError:
                             continue
+                        usage.update(chunk.get("usageMetadata") or {})
                         for cand in chunk.get("candidates", []):
+                            finish_reason = cand.get("finishReason") or finish_reason
                             for part in cand.get("content", {}).get("parts", []):
                                 if "text" in part and not part.get("thought"):
                                     tok = part["text"]
@@ -198,6 +208,8 @@ class GoogleProvider(BaseProvider):
                 "response": ProviderResponse(
                     content="", model_id=model_id, provider=self.name,
                     success=False, error=provider_error(e),
+                    input_tokens=token_count(usage.get("promptTokenCount")) + token_count(usage.get("toolUsePromptTokenCount")),
+                    output_tokens=token_count(usage.get("candidatesTokenCount")) + token_count(usage.get("thoughtsTokenCount")),
                 ),
             }
             return
@@ -205,6 +217,9 @@ class GoogleProvider(BaseProvider):
         yield {
             "type": "done",
             "response": ProviderResponse(
-                content=text, model_id=model_id, provider=self.name, tool_calls=tool_calls
+                content=text, model_id=model_id, provider=self.name, tool_calls=tool_calls,
+                input_tokens=token_count(usage.get("promptTokenCount")) + token_count(usage.get("toolUsePromptTokenCount")),
+                output_tokens=token_count(usage.get("candidatesTokenCount")) + token_count(usage.get("thoughtsTokenCount")),
+                finish_reason=finish_reason,
             ),
         }

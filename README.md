@@ -160,6 +160,17 @@ chat reuses rendered historical messages instead of reparsing them on every toke
 See [v0.13 upgrade notes](UPGRADE_NOTES_v0.13.md) for validation, sources, and
 remaining limitations.
 
+API tasks now use task-scoped tool menus with `discover_tools` for additional
+capabilities, bounded tool context on every request, and shared HTTP connections.
+Codex follow-ups reuse loaded threads; Claude default turns avoid unused model
+discovery. Activity details show request counts and estimated input tokens.
+See [runtime efficiency changes](RUNTIME_OPTIMIZATION.md) for the architecture,
+configuration, offline benchmark and verification limits.
+
+```bash
+python3 scripts/benchmark_runtime.py  # offline; no provider calls
+```
+
 ---
 
 ## API

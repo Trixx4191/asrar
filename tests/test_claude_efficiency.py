@@ -85,7 +85,7 @@ class ClaudeExecutionEfficiencyTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(SDK.clients[-1].closed)
         self.assertFalse(self.bridge.active)
         self.bridge.require_account.assert_awaited_once()
-        self.bridge.models.assert_awaited_once_with(account=self.account)
+        self.bridge.models.assert_not_awaited()
 
     async def test_changing_results_keep_running(self):
         events = await self.collect([("Grep", f"result {index}") for index in range(8)])
@@ -122,6 +122,26 @@ class ClaudeExecutionEfficiencyTest(unittest.IsolatedAsyncioTestCase):
         events = await self.collect([("Grep", prefix + str(index)) for index in range(4)])
         done = next(event for event in events if event.get("done"))
         self.assertFalse(done.get("incomplete", False))
+
+    async def test_account_default_avoids_catalog_sdk_startup(self):
+        self.bridge.models.side_effect = AssertionError("Unused model discovery")
+        events = await self.collect([])
+        self.assertTrue(next(event for event in events if event.get("done")))
+        self.bridge.models.assert_not_awaited()
+        self.assertEqual(len(SDK.clients), 1)
+        self.assertIsNone(SDK.clients[0].options.model)
+        self.assertIsNone(SDK.clients[0].options.effort)
+
+    async def test_explicit_model_and_effort_still_validate(self):
+        self.settings.claude_model = "claude-test"
+        self.settings.claude_effort = "high"
+        self.bridge.models.return_value = [{"id": "claude-test", "displayName": "Claude Test",
+                                            "supportedReasoningEfforts": [{"reasoningEffort": "high"}]}]
+        events = await self.collect([])
+        self.assertEqual(next(event for event in events if event.get("done"))["model_used"], "Claude Test")
+        self.bridge.models.assert_awaited_once_with(account=self.account)
+        self.assertEqual(SDK.clients[-1].options.model, "claude-test")
+        self.assertEqual(SDK.clients[-1].options.effort, "high")
 
     async def test_efficiency_guidance_preserves_custom_instructions(self):
         await self.collect([])
